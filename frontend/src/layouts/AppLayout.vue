@@ -1,7 +1,7 @@
 <template>
   <div class="app-shell">
     <aside class="app-shell__aside">
-      <div class="brand-card">
+      <section class="brand-card">
         <div class="brand-card__glow" />
         <div class="brand-card__glow brand-card__glow--soft" />
         <span class="brand-card__eyebrow">GSMV</span>
@@ -15,21 +15,22 @@
         <div class="brand-card__status">
           <div class="brand-card__status-item">
             <span>可用模块</span>
-            <strong>{{ availableMenus.length }}</strong>
+            <strong>{{ primaryMenus.length }}</strong>
           </div>
           <div class="brand-card__status-item">
             <span>当前身份</span>
             <strong>{{ authStore.profile?.roles[0] || '访客' }}</strong>
           </div>
         </div>
-      </div>
+      </section>
+
       <nav class="nav-card">
         <RouterLink
           v-for="item in availableMenus"
           :key="item.path"
           :to="item.path"
           class="nav-card__item"
-          active-class="is-active"
+          :class="{ 'is-active': isMenuActive(item.path) }"
         >
           <el-icon><component :is="item.icon" /></el-icon>
           <span>{{ item.label }}</span>
@@ -41,13 +42,15 @@
       <header class="app-header">
         <div class="app-header__halo app-header__halo--one" />
         <div class="app-header__halo app-header__halo--two" />
+
         <div class="app-header__intro">
           <span class="app-header__eyebrow">{{ activeMenuLabel }}</span>
           <strong>欢迎回来！{{ welcomeName }}</strong>
         </div>
+
         <div class="app-header__actions">
           <RouterLink to="/profile" class="profile-chip">
-            <el-avatar :size="38" :src="authStore.profile?.avatarUrl || '/default-avatar.jpg'">
+            <el-avatar :size="40" :src="authStore.profile?.avatarUrl || '/default-avatar.jpg'">
               {{ authStore.profile?.displayName?.slice(0, 1) || 'U' }}
             </el-avatar>
             <span>个人中心</span>
@@ -56,6 +59,20 @@
           <el-button type="primary" plain @click="handleLogout">退出登录</el-button>
         </div>
       </header>
+
+      <section class="app-toolbar">
+        <nav class="app-toolbar__nav">
+          <RouterLink
+            v-for="item in primaryMenus"
+            :key="item.path"
+            :to="item.path"
+            class="app-toolbar__link"
+            :class="{ 'is-active': isMenuActive(item.path) }"
+          >
+            {{ item.label }}
+          </RouterLink>
+        </nav>
+      </section>
 
       <section class="app-content">
         <RouterView />
@@ -67,9 +84,9 @@
 <script setup lang="ts">
 import {
   ChatDotRound,
-  Finished,
   DataAnalysis,
   Document,
+  Finished,
   Histogram,
   Location,
   MapLocation,
@@ -78,7 +95,7 @@ import {
   User,
 } from '@element-plus/icons-vue'
 import { computed } from 'vue'
-import { useRoute, useRouter, RouterLink, RouterView } from 'vue-router'
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
@@ -92,7 +109,7 @@ const menus = [
   { path: '/eco-map', label: '生态地图', icon: MapLocation, authority: 'OBS_READ' },
   { path: '/observations', label: '观测记录', icon: Notebook, authority: 'OBS_READ' },
   { path: '/assistant', label: 'AI 助手', icon: ChatDotRound },
-  { path: '/ai-reviews', label: 'AI复核', icon: Finished, authority: 'AI_REVIEW_READ' },
+  { path: '/ai-reviews', label: 'AI 复核', icon: Finished, authority: 'AI_REVIEW_READ' },
   { path: '/reports', label: '统计报表', icon: Histogram, authority: 'REPORT_READ' },
   { path: '/audits', label: '审计日志', icon: Setting, authority: 'AUDIT_READ' },
   { path: '/users', label: '用户权限', icon: User, authority: 'USER_ADMIN' },
@@ -103,11 +120,19 @@ const availableMenus = computed(() =>
   menus.filter((item) => !item.authority || authStore.authorities.includes(item.authority)),
 )
 
-const welcomeName = computed(() => authStore.profile?.displayName || authStore.profile?.username || '未登录用户')
+const primaryMenus = computed(() =>
+  availableMenus.value.filter((item) => item.path !== '/profile').slice(0, 8),
+)
 
 const activeMenuLabel = computed(() =>
-  availableMenus.value.find((item) => route.path.startsWith(item.path))?.label || '当前工作区',
+  availableMenus.value.find((item) => isMenuActive(item.path))?.label || '当前工作区',
 )
+
+const welcomeName = computed(() => authStore.profile?.displayName || authStore.profile?.username || '未登录用户')
+
+function isMenuActive(path: string) {
+  return route.path === path || route.path.startsWith(`${path}/`)
+}
 
 function handleLogout() {
   authStore.logout()
@@ -125,17 +150,18 @@ function handleLogout() {
 }
 
 .app-shell__aside {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
   position: sticky;
   top: 22px;
   align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
 }
 
 .brand-card,
 .nav-card,
-.app-header {
+.app-header,
+.app-toolbar {
   position: relative;
   border: 1px solid var(--gsmv-border);
   border-radius: 30px;
@@ -172,11 +198,13 @@ function handleLogout() {
 }
 
 .brand-card__eyebrow {
+  position: relative;
+  z-index: 1;
   display: inline-block;
   margin-bottom: 12px;
   color: var(--gsmv-primary);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 0.18em;
   text-transform: uppercase;
 }
@@ -342,8 +370,9 @@ function handleLogout() {
 }
 
 .app-header strong {
-  font-size: 28px;
-  line-height: 1.1;
+  font-size: 30px;
+  line-height: 1.06;
+  letter-spacing: -0.04em;
 }
 
 .app-header__halo {
@@ -395,6 +424,47 @@ function handleLogout() {
   font-size: 14px;
 }
 
+.app-toolbar {
+  padding: 12px 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03)),
+    rgba(8, 27, 63, 0.74);
+}
+
+.app-toolbar__nav {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.app-toolbar__link {
+  flex: 0 0 auto;
+  padding: 10px 16px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  color: var(--gsmv-muted);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition:
+    color 0.18s ease,
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    transform 0.18s ease;
+}
+
+.app-toolbar__link:hover,
+.app-toolbar__link.is-active {
+  color: var(--gsmv-text);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.12), rgba(101, 234, 255, 0.12)),
+    rgba(255, 255, 255, 0.04);
+  border-color: rgba(178, 245, 255, 0.18);
+  transform: translateY(-1px);
+}
+
 .app-content {
   flex: 1;
 }
@@ -417,6 +487,10 @@ function handleLogout() {
 
   .app-header {
     padding: 18px 20px;
+  }
+
+  .app-header strong {
+    font-size: 24px;
   }
 }
 </style>
