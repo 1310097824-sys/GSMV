@@ -1,0 +1,1107 @@
+package com.gsmv.ai;
+
+import com.gsmv.ai.dto.AssistantAiDtos;
+import com.gsmv.audit.service.AuditService;
+import com.gsmv.common.PageResponse;
+import com.gsmv.observation.ObservationService;
+import com.gsmv.observation.dto.ObservationDetailView;
+import com.gsmv.observation.dto.ObservationSpeciesView;
+import com.gsmv.observation.dto.ObservationView;
+import com.gsmv.report.ReportService;
+import com.gsmv.report.dto.DashboardSummary;
+import com.gsmv.report.dto.EcosystemAnalyticsPoint;
+import com.gsmv.security.SecurityUtils;
+import com.gsmv.species.SpeciesService;
+import com.gsmv.species.dto.SpeciesDetailView;
+import com.gsmv.species.dto.SpeciesView;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+
+@Service
+public class AssistantAiService {
+
+    private static final Set<String> RISK_STATUSES = Set.of("VU", "EN", "CR", "EW", "EX");
+    private static final DateTimeFormatter MONTH_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM");
+    private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    private static final Pattern DAYS_PATTERN = Pattern.compile("(?:最近|近|过去)(\\d{1,3})天");
+    private static final Pattern YEARS_PATTERN = Pattern.compile("(?:最近|近|过去)(\\d{1,2})年");
+    private static final Pattern LOCATION_TERM_PATTERN = Pattern.compile("([\\p{IsHan}A-Za-z]{2,16}(?:北部|南部|东部|西部|中部|附近|周边|近海|沿海|海域|海湾|海峡|河口|半岛|群岛|样带|红树林|海草床|珊瑚礁))");
+    private static final Map<String, Integer> CHINESE_YEAR_WORDS = Map.ofEntries(
+            Map.entry("一年", 1),
+            Map.entry("两年", 2),
+            Map.entry("二年", 2),
+            Map.entry("三年", 3),
+            Map.entry("四年", 4),
+            Map.entry("五年", 5),
+            Map.entry("六年", 6),
+            Map.entry("七年", 7),
+            Map.entry("八年", 8),
+            Map.entry("九年", 9),
+            Map.entry("十年", 10)
+    );
+    private static final Map<String, List<String>> LOCATION_ALIAS_GROUPS = Map.ofEntries(
+            Map.entry("湛江", List.of("湛江", "湛江附近", "湛江周边", "湛江近海", "雷州半岛")),
+            Map.entry("南海北部", List.of("南海北部", "南海北部海域", "南海北部近海")),
+            Map.entry("近岸样带", List.of("近岸样带", "近岸样带区", "近岸样带调查带", "样带")),
+            Map.entry("珠江口", List.of("珠江口", "伶仃洋")),
+            Map.entry("红树林", List.of("红树林", "红树林生态系统")),
+            Map.entry("海草床", List.of("海草床", "海草床生态系统")),
+            Map.entry("珊瑚礁", List.of("珊瑚礁", "珊瑚礁生态系统"))
+    );
+    private static final List<String> TREND_KEYWORDS = List.of("趋势", "变化", "波动", "增长", "下降", "对比", "演变");
+    private static final List<String> RISK_KEYWORDS = List.of("濒危", "易危", "受威胁", "重点保护", "高保护", "保护等级较高");
+    private static final List<String> ACTIVITY_KEYWORDS = List.of("谁最活跃", "最活跃", "观测次数", "观测活动", "谁的观测", "观察活动");
+    private static final List<String> ECOSYSTEM_HINTS = List.of("珊瑚礁", "红树林", "海草床", "深海", "近海", "海湾", "河口", "海域");
+    private static final List<String> LOCATION_SUFFIXES = List.of("附近", "周边", "近海", "沿海", "海域", "海湾", "海峡", "样带");
+
+    private final AiProperties aiProperties;
+    private final ObservationService observationService;
+    private final SpeciesService speciesService;
+    private final ReportService reportService;
+    private final AuditService auditService;
+    private final AssistantQueryCache assistantQueryCache;
+
+    public AssistantAiService(
+            AiProperties aiProperties,
+            ObservationService observationService,
+            SpeciesService speciesService,
+            ReportService reportService,
+            AuditService auditService,
+            AssistantQueryCache assistantQueryCache
+    ) {
+        this.aiProperties = aiProperties;
+        this.observationService = observationService;
+        this.speciesService = speciesService;
+        this.reportService = reportService;
+        this.auditService = auditService;
+        this.assistantQueryCache = assistantQueryCache;
+    }
+
+    public AssistantAiDtos.ChatResponse chat(AssistantAiDtos.ChatRequest request) {
+        String cacheKey = buildCacheKey(request);
+        AssistantAiDtos.ChatResponse cachedResponse = assistantQueryCache.get(cacheKey);
+        if (cachedResponse != null) {
+            auditService.record(
+                    SecurityUtils.requireCurrentUser().userId(),
+                    "AI",
+                    "ASSISTANT_CHAT",
+                    "ASSISTANT",
+                    null,
+                    true,
+                    "{\"message\":\"" + escapeJson(request.message()) + "\",\"cached\":true}"
+            );
+            return withCacheHit(cachedResponse, true);
+        }
+
+        AssistantAiDtos.StructuredQuery plan = extractStructuredQueryFast(request.message());
+        AssistantContext context = collectContext(plan);
+        AssistantAiDtos.ChatResponse response = buildLocalResponse(plan, context);
+        assistantQueryCache.put(cacheKey, response);
+
+        auditService.record(
+                SecurityUtils.requireCurrentUser().userId(),
+                "AI",
+                "ASSISTANT_CHAT",
+                "ASSISTANT",
+                null,
+                true,
+                "{\"message\":\"" + escapeJson(request.message()) + "\",\"cached\":false}"
+        );
+        return response;
+    }
+
+    private AssistantAiDtos.ChatResponse withCacheHit(AssistantAiDtos.ChatResponse response, boolean cacheHit) {
+        return new AssistantAiDtos.ChatResponse(
+                response.answer(),
+                response.structuredQuery(),
+                response.highlights(),
+                response.evidence(),
+                cacheHit
+        );
+    }
+
+    private String buildCacheKey(AssistantAiDtos.ChatRequest request) {
+        String messageKey = normalize(request.message()).toLowerCase(Locale.ROOT);
+        if (request.history() == null || request.history().isEmpty()) {
+            return messageKey;
+        }
+        List<AssistantAiDtos.ConversationMessage> history = request.history().stream()
+                .filter(item -> item != null && StringUtils.hasText(item.role()) && StringUtils.hasText(item.content()))
+                .toList();
+        String historyKey = history.stream()
+                .skip(Math.max(0, history.size() - 2))
+                .map(item -> item.role().trim().toLowerCase(Locale.ROOT) + ":" + normalize(item.content()).toLowerCase(Locale.ROOT))
+                .collect(Collectors.joining("|"));
+        return messageKey + "||" + historyKey;
+    }
+
+    private static Map<String, List<String>> locationAliasLookup() {
+        return Map.ofEntries(
+                Map.entry("湛江", List.of("湛江", "湛江附近", "湛江周边", "湛江近海", "湛江沿岸", "湛江外海")),
+                Map.entry("南海北部", List.of("南海北部", "南海北部海域", "南海北部近海", "南海北部近岸")),
+                Map.entry("近岸样带", List.of("近岸样带", "近岸样带区", "近岸样带调查带", "近岸调查样带", "近岸带", "样带")),
+                Map.entry("珠江口", List.of("珠江口", "伶仃洋", "珠江口近海", "珠江口海域")),
+                Map.entry("珠江口外海", List.of("珠江口外海", "珠江口口外", "伶仃洋外海", "万山群岛", "担杆列岛")),
+                Map.entry("北部湾", List.of("北部湾", "北部湾近海", "北部湾海域", "北部湾西岸", "广西近海", "防城港近海", "钦州湾")),
+                Map.entry("雷州半岛", List.of("雷州半岛", "雷州半岛近海", "雷州半岛沿岸", "雷州湾")),
+                Map.entry("东里海草床", List.of("东里海草床", "东里海草床样带", "湛江东里海草床", "东里样带")),
+                Map.entry("红树林", List.of("红树林", "红树林生态系统")),
+                Map.entry("海草床", List.of("海草床", "海草床生态系统")),
+                Map.entry("珊瑚礁", List.of("珊瑚礁", "珊瑚礁生态系统"))
+        );
+    }
+
+    private AssistantAiDtos.StructuredQuery extractStructuredQueryFast(String question) {
+        String message = normalize(question);
+        List<ObservationView> observationSamples = observationService
+                .list(null, null, LocalDateTime.now().minusYears(5), null, 1, 100)
+                .items();
+        List<SpeciesView> speciesSamples = speciesService
+                .listSpecies(null, 1, null, null, null, null, 1, 100)
+                .items();
+
+        Integer recentDays = extractNumber(message, DAYS_PATTERN);
+        Integer yearsBack = extractNumber(message, YEARS_PATTERN);
+        if (yearsBack == null) {
+            yearsBack = extractChineseYears(message);
+        }
+
+        boolean includeTrend = containsAny(message, TREND_KEYWORDS);
+        boolean riskOnly = containsAny(message, RISK_KEYWORDS);
+        String protectionLevel = extractProtectionLevel(message);
+        String iucnStatus = extractIucnStatus(message);
+        String ecosystemKeyword = firstNonBlank(
+                pickLongestMatch(message, observationSamples.stream().map(ObservationView::ecosystemName).toList()),
+                pickLongestMatch(message, ECOSYSTEM_HINTS)
+        );
+        String locationKeyword = resolveLocationKeyword(message, observationSamples, speciesSamples);
+        String speciesKeyword = pickLongestMatch(
+                message,
+                speciesSamples.stream()
+                        .flatMap(item -> List.of(item.chineseName(), item.scientificName()).stream())
+                        .toList()
+        );
+        String intent = inferIntent(message, speciesKeyword, ecosystemKeyword, includeTrend, riskOnly);
+
+        return new AssistantAiDtos.StructuredQuery(
+                intent,
+                emptyToNull(locationKeyword),
+                emptyToNull(ecosystemKeyword),
+                emptyToNull(speciesKeyword),
+                emptyToNull(protectionLevel),
+                emptyToNull(iucnStatus),
+                yearsBack,
+                recentDays,
+                includeTrend,
+                riskOnly,
+                inferLimit(message, intent)
+        );
+    }
+
+    private AssistantContext collectContext(AssistantAiDtos.StructuredQuery plan) {
+        DashboardSummary dashboardSummary = reportService.dashboardSummary();
+        List<EcosystemAnalyticsPoint> ecosystemAnalytics = reportService.ecosystemAnalytics().stream()
+                .filter(item -> !StringUtils.hasText(plan.ecosystemKeyword())
+                        || containsIgnoreCase(item.ecosystemName(), plan.ecosystemKeyword())
+                        || containsIgnoreCase(item.ecosystemType(), plan.ecosystemKeyword()))
+                .sorted(Comparator.comparingLong(EcosystemAnalyticsPoint::observationCount).reversed())
+                .toList();
+
+        LocalDateTime observedFrom = resolveObservedFrom(plan);
+        int fetchLimit = Math.min(
+                Math.max(resolveLimit(plan.limit(), 10) * 4, 24),
+                Math.max(aiProperties.assistantObservationLimit(), 24)
+        );
+        PageResponse<ObservationView> observationPage = observationService.list(null, null, observedFrom, null, 1, fetchLimit);
+        List<ObservationView> observationViews = observationPage.items().stream()
+                .filter(item -> matchesBasicFilters(item, plan))
+                .sorted(Comparator.comparing(ObservationView::observedAt).reversed())
+                .toList();
+
+        Map<Long, SpeciesDetailView> speciesCache = new LinkedHashMap<>();
+        List<ObservationDetailView> observations = new ArrayList<>();
+        if (needsObservationDetails(plan, observationViews)) {
+            int detailLimit = Math.min(Math.max(resolveLimit(plan.limit(), 10) * 2, 12), 40);
+            for (ObservationView view : observationViews.stream().limit(detailLimit).toList()) {
+                observations.add(observationService.getDetail(view.id()));
+            }
+        }
+
+        if (needsSpeciesFilter(plan)) {
+            observations = observations.stream()
+                    .filter(detail -> detail.speciesItems().stream()
+                            .map(item -> speciesCache.computeIfAbsent(item.speciesId(), speciesService::getSpecies))
+                            .anyMatch(detailView -> matchesSpeciesDetail(detailView, plan)))
+                    .toList();
+            Set<Long> matchedObservationIds = observations.stream()
+                    .map(ObservationDetailView::id)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            observationViews = observationViews.stream()
+                    .filter(item -> matchedObservationIds.contains(item.id()))
+                    .toList();
+        }
+
+        LinkedHashMap<Long, SpeciesDetailView> speciesMap = new LinkedHashMap<>();
+        for (ObservationDetailView detail : observations) {
+            for (ObservationSpeciesView item : detail.speciesItems()) {
+                SpeciesDetailView species = speciesCache.computeIfAbsent(item.speciesId(), speciesService::getSpecies);
+                if (matchesSpeciesDetail(species, plan)) {
+                    speciesMap.putIfAbsent(species.id(), species);
+                }
+            }
+        }
+
+        if (shouldLoadSpeciesArchive(plan, speciesMap.isEmpty())) {
+            int speciesLimit = Math.min(
+                    Math.max(resolveLimit(plan.limit(), aiProperties.assistantSpeciesLimit()) * 3, 20),
+                    100
+            );
+            List<SpeciesDetailView> archiveSpecies = speciesService.listSpecies(
+                            emptyToNull(plan.speciesKeyword()),
+                            1,
+                            emptyToNull(plan.protectionLevel()),
+                            emptyToNull(plan.iucnStatus()),
+                            emptyToNull(plan.locationKeyword()),
+                            null,
+                            1,
+                            speciesLimit
+                    )
+                    .items()
+                    .stream()
+                    .map(item -> speciesService.getSpecies(item.id()))
+                    .filter(detail -> matchesSpeciesDetail(detail, plan))
+                    .toList();
+
+            if (archiveSpecies.isEmpty()
+                    && (plan.riskOnly()
+                    || StringUtils.hasText(plan.protectionLevel())
+                    || StringUtils.hasText(plan.iucnStatus()))) {
+                archiveSpecies = speciesService.listSpecies(
+                                emptyToNull(plan.speciesKeyword()),
+                                1,
+                                null,
+                                null,
+                                emptyToNull(plan.locationKeyword()),
+                                null,
+                                1,
+                                speciesLimit
+                        )
+                        .items()
+                        .stream()
+                        .map(item -> speciesService.getSpecies(item.id()))
+                        .filter(detail -> matchesSpeciesDetail(detail, plan))
+                        .toList();
+            }
+            archiveSpecies.forEach(detail -> speciesMap.putIfAbsent(detail.id(), detail));
+        }
+
+        List<SpeciesDetailView> species = speciesMap.values().stream()
+                .sorted(this::compareSpeciesPriority)
+                .limit(resolveLimit(plan.limit(), aiProperties.assistantSpeciesLimit()))
+                .toList();
+        List<TrendPoint> trendPoints = shouldBuildTrend(plan, observationViews)
+                ? (observations.isEmpty() ? aggregateViewTrend(observationViews) : aggregateDetailTrend(observations))
+                : List.of();
+
+        return new AssistantContext(
+                dashboardSummary,
+                observationViews,
+                observations,
+                species,
+                trendPoints,
+                aggregateObserverActivities(observationViews),
+                ecosystemAnalytics
+        );
+    }
+
+    private AssistantAiDtos.ChatResponse buildLocalResponse(
+            AssistantAiDtos.StructuredQuery plan,
+            AssistantContext context
+    ) {
+        String answer = switch (safe(plan.intent())) {
+            case "observation_activity" -> buildObservationActivityAnswer(plan, context);
+            case "ecosystem_trend" -> buildTrendAnswer(plan, context);
+            case "observation_lookup" -> buildObservationAnswer(plan, context);
+            case "species_lookup" -> buildSpeciesAnswer(plan, context);
+            default -> buildOverviewAnswer(plan, context);
+        };
+        return new AssistantAiDtos.ChatResponse(
+                answer,
+                plan,
+                buildHighlights(plan, context),
+                buildEvidence(plan, context),
+                false
+        );
+    }
+
+    private String buildObservationActivityAnswer(AssistantAiDtos.StructuredQuery plan, AssistantContext context) {
+        if (context.observerActivities().isEmpty()) {
+            return buildNoDataAnswer(plan, context.dashboardSummary());
+        }
+        ObservationActivity top = context.observerActivities().get(0);
+        StringBuilder answer = new StringBuilder();
+        answer.append("按当前筛选条件，最活跃的观测人员是 ")
+                .append(top.observerName())
+                .append("，共记录 ")
+                .append(top.count())
+                .append(" 次观测。");
+        if (context.observerActivities().size() > 1) {
+            String ranking = context.observerActivities().stream()
+                    .limit(3)
+                    .map(item -> item.observerName() + "（" + item.count() + " 次）")
+                    .collect(Collectors.joining("、"));
+            answer.append(" 当前前三位依次为 ").append(ranking).append("。");
+        }
+        if (StringUtils.hasText(plan.locationKeyword())) {
+            answer.append(" 地点过滤为 ").append(plan.locationKeyword()).append("。");
+        }
+        return answer.toString();
+    }
+
+    private String buildObservationAnswer(AssistantAiDtos.StructuredQuery plan, AssistantContext context) {
+        if (context.observationViews().isEmpty()) {
+            if (!context.species().isEmpty()) {
+                return "按当前筛选条件，暂未匹配到直接相关的观测记录，但系统物种档案中仍有 "
+                        + context.species().size()
+                        + " 个相关物种可供参考，包括 "
+                        + joinSpeciesNames(context.species(), 5)
+                        + "。";
+            }
+            return buildNoDataAnswer(plan, context.dashboardSummary());
+        }
+
+        LocalDateTime newest = context.observationViews().stream()
+                .map(ObservationView::observedAt)
+                .max(LocalDateTime::compareTo)
+                .orElse(LocalDateTime.now());
+        LocalDateTime oldest = context.observationViews().stream()
+                .map(ObservationView::observedAt)
+                .min(LocalDateTime::compareTo)
+                .orElse(newest);
+
+        StringBuilder answer = new StringBuilder();
+        answer.append("按当前筛选条件，共匹配到 ")
+                .append(context.observationViews().size())
+                .append(" 条观测记录，时间范围从 ")
+                .append(formatDate(oldest))
+                .append(" 到 ")
+                .append(formatDate(newest))
+                .append("。");
+        if (StringUtils.hasText(plan.locationKeyword())) {
+            answer.append(" 地点范围已过滤为 ").append(plan.locationKeyword()).append("。");
+        }
+        if (StringUtils.hasText(plan.ecosystemKeyword())) {
+            answer.append(" 生态系统聚焦于 ").append(plan.ecosystemKeyword()).append("。");
+        }
+        if (!context.species().isEmpty()) {
+            answer.append(" 关联物种包括 ").append(joinSpeciesNames(context.species(), 6)).append("。");
+        }
+        answer.append(" 主要观测地点有 ").append(joinObservationLocations(context.observationViews(), 4)).append("。");
+        if (!context.observerActivities().isEmpty()) {
+            ObservationActivity top = context.observerActivities().get(0);
+            answer.append(" 其中最活跃的观测人员是 ")
+                    .append(top.observerName())
+                    .append("，共 ")
+                    .append(top.count())
+                    .append(" 次。");
+        }
+        if (!context.trendPoints().isEmpty()) {
+            answer.append(" ").append(summarizeTrendSentence(context.trendPoints()));
+        }
+        return answer.toString();
+    }
+
+    private String buildSpeciesAnswer(AssistantAiDtos.StructuredQuery plan, AssistantContext context) {
+        if (context.species().isEmpty()) {
+            return buildNoDataAnswer(plan, context.dashboardSummary());
+        }
+
+        StringBuilder answer = new StringBuilder();
+        if (plan.riskOnly() || StringUtils.hasText(plan.protectionLevel()) || StringUtils.hasText(plan.iucnStatus())) {
+            answer.append("按当前高保护 / 高风险筛选条件，");
+        } else {
+            answer.append("按当前筛选条件，");
+        }
+        answer.append("系统中共匹配到 ")
+                .append(context.species().size())
+                .append(" 个相关物种，包括 ")
+                .append(joinSpeciesNames(context.species(), 6))
+                .append("。");
+        answer.append(" 从分布特点看，").append(summarizeDistributionFeatures(context.species())).append("。");
+        if (!context.observationViews().isEmpty()) {
+            answer.append(" 同时关联到 ")
+                    .append(context.observationViews().size())
+                    .append(" 条观测记录。");
+        }
+        return answer.toString();
+    }
+
+    private String buildTrendAnswer(AssistantAiDtos.StructuredQuery plan, AssistantContext context) {
+        if (context.trendPoints().isEmpty() && context.ecosystemAnalytics().isEmpty()) {
+            return buildNoDataAnswer(plan, context.dashboardSummary());
+        }
+
+        String scope = firstNonBlank(plan.ecosystemKeyword(), plan.locationKeyword(), "当前筛选范围");
+        StringBuilder answer = new StringBuilder();
+        answer.append(scope).append(" 的趋势分析显示，");
+
+        if (!context.trendPoints().isEmpty()) {
+            answer.append(summarizeTrendSentence(context.trendPoints()));
+        } else {
+            answer.append("当前缺少足够的月度变化数据。");
+        }
+
+        if (!context.ecosystemAnalytics().isEmpty()) {
+            EcosystemAnalyticsPoint top = context.ecosystemAnalytics().get(0);
+            answer.append(" 当前累计观测 ")
+                    .append(top.observationCount())
+                    .append(" 次，发现物种 ")
+                    .append(top.speciesCount())
+                    .append(" 种。");
+        }
+        if (!context.species().isEmpty()) {
+            answer.append(" 代表性物种包括 ").append(joinSpeciesNames(context.species(), 5)).append("。");
+        }
+        return answer.toString();
+    }
+
+    private String buildOverviewAnswer(AssistantAiDtos.StructuredQuery plan, AssistantContext context) {
+        if (context.species().isEmpty() && context.observationViews().isEmpty()) {
+            return buildNoDataAnswer(plan, context.dashboardSummary());
+        }
+
+        StringBuilder answer = new StringBuilder();
+        answer.append("当前系统概况为：物种档案 ")
+                .append(context.dashboardSummary().totalSpecies())
+                .append(" 条，观测记录 ")
+                .append(context.dashboardSummary().totalObservations())
+                .append(" 条，生态系统 ")
+                .append(context.dashboardSummary().totalEcosystems())
+                .append(" 个。");
+        if (!context.species().isEmpty()) {
+            answer.append(" 当前问题关联的代表性物种包括 ")
+                    .append(joinSpeciesNames(context.species(), 5))
+                    .append("。");
+        }
+        if (!context.observationViews().isEmpty()) {
+            answer.append(" 相关观测主要出现在 ")
+                    .append(joinObservationLocations(context.observationViews(), 4))
+                    .append("。");
+        }
+        return answer.toString();
+    }
+
+    private List<String> buildHighlights(AssistantAiDtos.StructuredQuery plan, AssistantContext context) {
+        List<String> highlights = new ArrayList<>();
+        if (!context.observationViews().isEmpty()) {
+            highlights.add("匹配到 " + context.observationViews().size() + " 条观测记录");
+        }
+        if (!"observation_activity".equals(plan.intent()) && !context.species().isEmpty()) {
+            highlights.add("匹配到 " + context.species().size() + " 个相关物种");
+        }
+        if (!context.ecosystemAnalytics().isEmpty()) {
+            EcosystemAnalyticsPoint top = context.ecosystemAnalytics().get(0);
+            highlights.add(top.ecosystemName() + " 观测次数 " + top.observationCount() + " 次");
+        }
+        if (!context.observerActivities().isEmpty()) {
+            ObservationActivity top = context.observerActivities().get(0);
+            highlights.add(top.observerName() + " 是当前条件下最活跃的观测人员");
+        }
+        if (plan.riskOnly()) {
+            highlights.add("已启用高保护 / 高风险筛选");
+        }
+        if (StringUtils.hasText(plan.locationKeyword())) {
+            highlights.add("地点过滤：" + plan.locationKeyword());
+        }
+        if (highlights.isEmpty()) {
+            highlights.add("当前条件下没有直接命中完整数据，建议缩小时间或地点范围再试");
+        }
+        return highlights.stream().limit(4).toList();
+    }
+
+    private List<AssistantAiDtos.EvidenceItem> buildEvidence(AssistantAiDtos.StructuredQuery plan, AssistantContext context) {
+        List<AssistantAiDtos.EvidenceItem> evidence = new ArrayList<>();
+        evidence.add(new AssistantAiDtos.EvidenceItem(
+                "dashboard",
+                "系统概况",
+                "物种 " + context.dashboardSummary().totalSpecies()
+                        + " 条，观测 " + context.dashboardSummary().totalObservations()
+                        + " 条，生态系统 " + context.dashboardSummary().totalEcosystems() + " 个"
+        ));
+
+        if (!"observation_activity".equals(plan.intent())) {
+            context.species().stream().limit(3).forEach(item -> evidence.add(new AssistantAiDtos.EvidenceItem(
+                    "species",
+                    firstNonBlank(item.chineseName(), item.scientificName(), "物种档案"),
+                    "保护等级：" + firstNonBlank(item.protectionLevel(), "未标注")
+                            + "；IUCN：" + firstNonBlank(item.iucnStatus(), "未标注")
+                            + "；分布：" + firstNonBlank(item.geoRangeText(), item.distribution(), "未填写")
+            )));
+        }
+
+        context.observationViews().stream().limit(3).forEach(item -> evidence.add(new AssistantAiDtos.EvidenceItem(
+                "observation",
+                firstNonBlank(item.locationName(), item.ecosystemName(), "观测记录"),
+                formatDate(item.observedAt()) + "；观测人员：" + firstNonBlank(item.observerName(), "未标注")
+        )));
+
+        context.ecosystemAnalytics().stream().limit(2).forEach(item -> evidence.add(new AssistantAiDtos.EvidenceItem(
+                "ecosystem",
+                firstNonBlank(item.ecosystemName(), item.ecosystemType(), "生态系统"),
+                "观测次数 " + item.observationCount() + " 次；发现物种 " + item.speciesCount() + " 种"
+        )));
+
+        if (StringUtils.hasText(plan.speciesKeyword()) && context.species().isEmpty()) {
+            evidence.add(new AssistantAiDtos.EvidenceItem(
+                    "hint",
+                    "检索提示",
+                    "当前物种关键词没有命中物种档案，可尝试减少修饰词或只保留中文名 / 学名再查询"
+            ));
+        }
+        return evidence.stream().limit(6).toList();
+    }
+
+    private boolean matchesBasicFilters(ObservationView item, AssistantAiDtos.StructuredQuery plan) {
+        if (StringUtils.hasText(plan.locationKeyword())) {
+            boolean matchedLocation = matchesLocationText(item.locationName(), plan.locationKeyword())
+                    || matchesLocationText(item.note(), plan.locationKeyword())
+                    || matchesLocationText(item.ecosystemName(), plan.locationKeyword());
+            if (!matchedLocation) {
+                return false;
+            }
+        }
+        if (StringUtils.hasText(plan.ecosystemKeyword())
+                && !containsIgnoreCase(item.ecosystemName(), plan.ecosystemKeyword())) {
+            return false;
+        }
+        return true;
+    }
+
+    private boolean matchesSpeciesDetail(SpeciesDetailView detail, AssistantAiDtos.StructuredQuery plan) {
+        if (StringUtils.hasText(plan.speciesKeyword())) {
+            boolean matchedKeyword = containsIgnoreCase(detail.chineseName(), plan.speciesKeyword())
+                    || containsIgnoreCase(detail.scientificName(), plan.speciesKeyword())
+                    || containsIgnoreCase(detail.classificationPath(), plan.speciesKeyword());
+            if (!matchedKeyword) {
+                return false;
+            }
+        }
+        if (StringUtils.hasText(plan.locationKeyword())) {
+            boolean matchedLocation = matchesLocationText(detail.geoRangeText(), plan.locationKeyword())
+                    || matchesLocationText(detail.distribution(), plan.locationKeyword())
+                    || matchesLocationText(detail.habitat(), plan.locationKeyword());
+            if (!matchedLocation) {
+                return false;
+            }
+        }
+        if (StringUtils.hasText(plan.iucnStatus())
+                && !containsIgnoreCase(detail.iucnStatus(), plan.iucnStatus())) {
+            return false;
+        }
+        if (StringUtils.hasText(plan.protectionLevel())
+                && !containsIgnoreCase(detail.protectionLevel(), plan.protectionLevel())) {
+            return false;
+        }
+        if (plan.riskOnly()) {
+            return isRiskSpecies(detail);
+        }
+        return true;
+    }
+
+    private boolean isRiskSpecies(SpeciesDetailView detail) {
+        String status = normalize(detail.iucnStatus()).toUpperCase(Locale.ROOT);
+        boolean statusRisk = RISK_STATUSES.contains(status)
+                || containsAny(detail.iucnStatus(), List.of("极危", "濒危", "易危"));
+        boolean protectionRisk = containsAny(
+                detail.protectionLevel(),
+                List.of("一级", "二级", "重点保护", "国家一级", "国家二级")
+        );
+        return statusRisk || protectionRisk;
+    }
+
+    private boolean shouldLoadSpeciesArchive(AssistantAiDtos.StructuredQuery plan, boolean speciesEmpty) {
+        return "species_lookup".equals(plan.intent())
+                || ("overview".equals(plan.intent()) && speciesEmpty)
+                || StringUtils.hasText(plan.speciesKeyword())
+                || StringUtils.hasText(plan.locationKeyword())
+                || StringUtils.hasText(plan.protectionLevel())
+                || StringUtils.hasText(plan.iucnStatus())
+                || plan.riskOnly();
+    }
+
+    private boolean needsSpeciesFilter(AssistantAiDtos.StructuredQuery plan) {
+        return StringUtils.hasText(plan.speciesKeyword())
+                || StringUtils.hasText(plan.protectionLevel())
+                || StringUtils.hasText(plan.iucnStatus())
+                || plan.riskOnly();
+    }
+
+    private boolean needsObservationDetails(AssistantAiDtos.StructuredQuery plan, List<ObservationView> observationViews) {
+        if (observationViews.isEmpty()) {
+            return false;
+        }
+        return "observation_lookup".equals(plan.intent())
+                || needsSpeciesFilter(plan)
+                || shouldBuildTrend(plan, observationViews);
+    }
+
+    private boolean shouldBuildTrend(AssistantAiDtos.StructuredQuery plan, List<ObservationView> observationViews) {
+        return plan.includeTrend()
+                || "ecosystem_trend".equals(plan.intent())
+                || (!observationViews.isEmpty() && StringUtils.hasText(plan.ecosystemKeyword()));
+    }
+
+    private LocalDateTime resolveObservedFrom(AssistantAiDtos.StructuredQuery plan) {
+        if (plan.yearsBack() != null && plan.yearsBack() > 0) {
+            return LocalDateTime.now().minusYears(plan.yearsBack());
+        }
+        if (plan.recentDays() != null && plan.recentDays() > 0) {
+            return LocalDateTime.now().minusDays(plan.recentDays());
+        }
+        return LocalDateTime.now().minusDays(365);
+    }
+
+    private List<TrendPoint> aggregateDetailTrend(List<ObservationDetailView> observations) {
+        Map<String, Set<Long>> speciesByMonth = new LinkedHashMap<>();
+        Map<String, Integer> observationCountByMonth = new LinkedHashMap<>();
+        for (ObservationDetailView observation : observations) {
+            String month = observation.observedAt().format(MONTH_FORMATTER);
+            observationCountByMonth.merge(month, 1, Integer::sum);
+            speciesByMonth.computeIfAbsent(month, key -> new LinkedHashSet<>());
+            for (ObservationSpeciesView item : observation.speciesItems()) {
+                speciesByMonth.get(month).add(item.speciesId());
+            }
+        }
+        return observationCountByMonth.keySet().stream()
+                .sorted()
+                .map(month -> new TrendPoint(
+                        month,
+                        observationCountByMonth.getOrDefault(month, 0),
+                        speciesByMonth.getOrDefault(month, Set.of()).size()
+                ))
+                .toList();
+    }
+
+    private List<TrendPoint> aggregateViewTrend(List<ObservationView> observations) {
+        Map<String, Integer> observationCountByMonth = new LinkedHashMap<>();
+        for (ObservationView observation : observations) {
+            String month = observation.observedAt().format(MONTH_FORMATTER);
+            observationCountByMonth.merge(month, 1, Integer::sum);
+        }
+        return observationCountByMonth.keySet().stream()
+                .sorted()
+                .map(month -> new TrendPoint(month, observationCountByMonth.getOrDefault(month, 0), 0))
+                .toList();
+    }
+
+    private List<ObservationActivity> aggregateObserverActivities(List<ObservationView> observationViews) {
+        Map<String, Integer> countByObserver = new LinkedHashMap<>();
+        for (ObservationView observation : observationViews) {
+            String observerName = firstNonBlank(observation.observerName(), "未标注");
+            countByObserver.merge(observerName, 1, Integer::sum);
+        }
+        return countByObserver.entrySet().stream()
+                .map(entry -> new ObservationActivity(entry.getKey(), entry.getValue()))
+                .sorted(Comparator.comparingInt(ObservationActivity::count).reversed())
+                .toList();
+    }
+
+    private int compareSpeciesPriority(SpeciesDetailView left, SpeciesDetailView right) {
+        int riskCompare = Integer.compare(riskScore(right), riskScore(left));
+        if (riskCompare != 0) {
+            return riskCompare;
+        }
+        return firstNonBlank(left.chineseName(), left.scientificName(), "")
+                .compareToIgnoreCase(firstNonBlank(right.chineseName(), right.scientificName(), ""));
+    }
+
+    private int riskScore(SpeciesDetailView species) {
+        String status = normalize(species.iucnStatus()).toUpperCase(Locale.ROOT);
+        if ("CR".equals(status) || containsAny(species.iucnStatus(), List.of("极危"))) {
+            return 5;
+        }
+        if ("EN".equals(status) || containsAny(species.iucnStatus(), List.of("濒危"))) {
+            return 4;
+        }
+        if ("VU".equals(status) || containsAny(species.iucnStatus(), List.of("易危"))) {
+            return 3;
+        }
+        if (containsAny(species.protectionLevel(), List.of("国家一级", "一级", "重点保护"))) {
+            return 2;
+        }
+        if (containsAny(species.protectionLevel(), List.of("国家二级", "二级"))) {
+            return 1;
+        }
+        return 0;
+    }
+
+    private int inferLimit(String message, String intent) {
+        if (containsAny(message, List.of("全部", "所有"))) {
+            return 20;
+        }
+        if (containsAny(message, List.of("列出", "哪些", "有哪些"))) {
+            return "observation_lookup".equals(intent) ? 10 : 8;
+        }
+        return "overview".equals(intent) ? 6 : 8;
+    }
+
+    private String inferIntent(String message, String speciesKeyword, String ecosystemKeyword, boolean includeTrend, boolean riskOnly) {
+        if (containsAny(message, ACTIVITY_KEYWORDS)) {
+            return "observation_activity";
+        }
+        if (includeTrend || StringUtils.hasText(ecosystemKeyword)) {
+            if (containsAny(message, List.of("生态系统", "生态", "趋势", "变化", "红树林", "珊瑚礁", "海草床"))) {
+                return "ecosystem_trend";
+            }
+        }
+        if (containsAny(message, List.of("观测到", "观测记录", "最近", "近30天", "近三年", "活跃"))) {
+            return "observation_lookup";
+        }
+        if (StringUtils.hasText(speciesKeyword)
+                || riskOnly
+                || containsAny(message, List.of("物种", "分布", "保护等级", "IUCN", "濒危"))) {
+            return "species_lookup";
+        }
+        return "overview";
+    }
+
+    private Integer extractNumber(String source, Pattern pattern) {
+        Matcher matcher = pattern.matcher(source);
+        if (matcher.find()) {
+            return Integer.parseInt(matcher.group(1));
+        }
+        return null;
+    }
+
+    private Integer extractChineseYears(String source) {
+        for (Map.Entry<String, Integer> entry : CHINESE_YEAR_WORDS.entrySet()) {
+            if (source.contains(entry.getKey())) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
+
+    private String extractProtectionLevel(String source) {
+        if (containsAny(source, List.of("国家一级", "一级保护", "一级重点"))) {
+            return "一级";
+        }
+        if (containsAny(source, List.of("国家二级", "二级保护", "二级重点"))) {
+            return "二级";
+        }
+        return null;
+    }
+
+    private String extractIucnStatus(String source) {
+        if (containsAny(source, List.of("CR", "极危"))) {
+            return "CR";
+        }
+        if (containsAny(source, List.of("EN", "濒危"))) {
+            return "EN";
+        }
+        if (containsAny(source, List.of("VU", "易危"))) {
+            return "VU";
+        }
+        return null;
+    }
+
+    private String resolveLocationKeyword(String message, List<ObservationView> observationSamples, List<SpeciesView> speciesSamples) {
+        for (Map.Entry<String, List<String>> entry : locationAliasLookup().entrySet()) {
+            if (containsIgnoreCase(message, entry.getKey())
+                    || entry.getValue().stream().anyMatch(alias -> containsIgnoreCase(message, alias))) {
+                return entry.getKey();
+            }
+        }
+        String bySuffix = simplifyLocationToken(extractLocationBySuffix(message));
+        if (StringUtils.hasText(bySuffix)) {
+            return bySuffix;
+        }
+        Set<String> lexicon = buildLocationLexicon(observationSamples, speciesSamples);
+        return simplifyLocationToken(pickLongestMatch(message, lexicon));
+    }
+
+    private Set<String> buildLocationLexicon(List<ObservationView> observationSamples, List<SpeciesView> speciesSamples) {
+        Set<String> lexicon = new LinkedHashSet<>();
+        locationAliasLookup().forEach((canonical, aliases) -> {
+            lexicon.add(canonical);
+            lexicon.addAll(aliases);
+        });
+        observationSamples.forEach(item -> {
+            appendLocationTokens(lexicon, item.locationName());
+            appendLocationTokens(lexicon, item.ecosystemName());
+            appendLocationTokens(lexicon, item.note());
+        });
+        speciesSamples.forEach(item -> appendLocationTokens(lexicon, item.geoRangeText()));
+        return lexicon;
+    }
+
+    private void appendLocationTokens(Set<String> lexicon, String source) {
+        String normalized = simplifyLocationToken(source);
+        if (!StringUtils.hasText(normalized)) {
+            return;
+        }
+        lexicon.add(normalized);
+        for (String segment : normalized.split("[，,、；;|/]")) {
+            String token = simplifyLocationToken(segment);
+            if (StringUtils.hasText(token)) {
+                lexicon.add(token);
+            }
+        }
+        Matcher matcher = LOCATION_TERM_PATTERN.matcher(normalized);
+        while (matcher.find()) {
+            String token = simplifyLocationToken(matcher.group(1));
+            if (StringUtils.hasText(token)) {
+                lexicon.add(token);
+            }
+        }
+        if (normalized.contains("南海北部")) {
+            lexicon.add("南海北部");
+        }
+        if (normalized.contains("近岸样带")) {
+            lexicon.add("近岸样带");
+        }
+        if (normalized.contains("湛江")) {
+            lexicon.add("湛江");
+        }
+    }
+
+    private String extractLocationBySuffix(String source) {
+        for (String suffix : LOCATION_SUFFIXES) {
+            int index = source.indexOf(suffix);
+            if (index <= 0) {
+                continue;
+            }
+            String snippet = source.substring(Math.max(0, index - 8), index).trim();
+            snippet = snippet.replaceAll("(最近|过去|近)?[一二三四五六七八九十两0-9]+(年|天)", "");
+            snippet = snippet.replace("在", "").replace("于", "").replace("到", "").trim();
+            snippet = snippet.replace("最近", "").replace("过去", "").trim();
+            if (snippet.length() >= 2) {
+                return snippet;
+            }
+        }
+        return null;
+    }
+
+    private boolean matchesLocationText(String source, String keyword) {
+        if (!StringUtils.hasText(source) || !StringUtils.hasText(keyword)) {
+            return false;
+        }
+        for (String alias : locationAliases(keyword)) {
+            if (containsIgnoreCase(source, alias)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private Set<String> locationAliases(String keyword) {
+        Set<String> aliases = new LinkedHashSet<>();
+        String normalizedKeyword = simplifyLocationToken(keyword);
+        if (StringUtils.hasText(normalizedKeyword)) {
+            aliases.add(normalizedKeyword);
+        }
+        for (Map.Entry<String, List<String>> entry : locationAliasLookup().entrySet()) {
+            if (containsIgnoreCase(normalizedKeyword, entry.getKey())
+                    || containsIgnoreCase(entry.getKey(), normalizedKeyword)
+                    || entry.getValue().stream().anyMatch(alias -> containsIgnoreCase(normalizedKeyword, alias) || containsIgnoreCase(alias, normalizedKeyword))) {
+                aliases.add(entry.getKey());
+                aliases.addAll(entry.getValue());
+            }
+        }
+        for (String suffix : LOCATION_SUFFIXES) {
+            if (normalizedKeyword.endsWith(suffix) && normalizedKeyword.length() > suffix.length() + 1) {
+                aliases.add(normalizedKeyword.substring(0, normalizedKeyword.length() - suffix.length()));
+            }
+        }
+        if (normalizedKeyword.endsWith("北部") || normalizedKeyword.endsWith("南部")
+                || normalizedKeyword.endsWith("东部") || normalizedKeyword.endsWith("西部")
+                || normalizedKeyword.endsWith("中部")) {
+            aliases.add(normalizedKeyword.substring(0, normalizedKeyword.length() - 2));
+        }
+        return aliases.stream().filter(StringUtils::hasText).collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    private String simplifyLocationToken(String token) {
+        if (!StringUtils.hasText(token)) {
+            return null;
+        }
+        String normalized = token
+                .replace('（', ' ')
+                .replace('）', ' ')
+                .replace('(', ' ')
+                .replace(')', ' ')
+                .replace('\n', ' ')
+                .replace('\r', ' ')
+                .trim();
+        normalized = normalized.replaceAll("\\s*[A-Za-z]\\d+$", "");
+        normalized = normalized.replaceAll("(最近|过去|近)?[一二三四五六七八九十两0-9]+(年|天)", "");
+        normalized = normalized.replaceAll("^(在|于|到|从|把)", "");
+        normalized = normalized.replaceAll("[，,、；;。]+$", "").trim();
+        return normalized.length() < 2 ? null : normalized;
+    }
+
+    private String pickLongestMatch(String message, Collection<String> candidates) {
+        return candidates.stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .filter(candidate -> containsIgnoreCase(message, candidate))
+                .max(Comparator.comparingInt(String::length))
+                .orElse(null);
+    }
+
+    private String buildNoDataAnswer(AssistantAiDtos.StructuredQuery plan, DashboardSummary dashboardSummary) {
+        StringBuilder answer = new StringBuilder();
+        answer.append("当前系统数据暂不足以直接回答这个问题。")
+                .append(" 目前系统共有物种档案 ")
+                .append(dashboardSummary.totalSpecies())
+                .append(" 条、观测记录 ")
+                .append(dashboardSummary.totalObservations())
+                .append(" 条、生态系统 ")
+                .append(dashboardSummary.totalEcosystems())
+                .append(" 个。");
+        if (StringUtils.hasText(plan.locationKeyword())) {
+            answer.append(" 在“").append(plan.locationKeyword()).append("”相关范围内暂未检索到满足条件的数据。");
+        }
+        if (StringUtils.hasText(plan.speciesKeyword())) {
+            answer.append(" 建议尝试只保留物种中文名或学名再次查询。");
+        }
+        return answer.toString();
+    }
+
+    private String summarizeDistributionFeatures(List<SpeciesDetailView> species) {
+        List<String> ranges = species.stream()
+                .map(item -> firstNonBlank(item.geoRangeText(), item.distribution(), item.habitat()))
+                .filter(StringUtils::hasText)
+                .distinct()
+                .limit(4)
+                .toList();
+        if (!ranges.isEmpty()) {
+            return "分布范围主要集中在 " + String.join("、", ranges);
+        }
+        long withCoordinates = species.stream()
+                .filter(item -> item.distributionLat() != null && item.distributionLng() != null)
+                .count();
+        if (withCoordinates > 0) {
+            return "已有 " + withCoordinates + " 个物种带有明确坐标点，分布以近海与沿岸海域为主";
+        }
+        return "当前档案中的地理描述较少，暂时只能判断为以海洋与近岸环境分布为主";
+    }
+
+    private String summarizeTrendSentence(List<TrendPoint> trendPoints) {
+        if (trendPoints.isEmpty()) {
+            return "当前没有足够的月度趋势数据。";
+        }
+        TrendPoint first = trendPoints.get(0);
+        TrendPoint last = trendPoints.get(trendPoints.size() - 1);
+        TrendPoint peak = trendPoints.stream()
+                .max(Comparator.comparingInt(TrendPoint::observationCount))
+                .orElse(last);
+        String direction = last.observationCount() > first.observationCount()
+                ? "整体呈上升趋势"
+                : last.observationCount() < first.observationCount()
+                ? "整体呈回落趋势"
+                : "整体相对平稳";
+        String speciesPart = peak.speciesCount() > 0 ? "，关联物种数约 " + peak.speciesCount() + " 种" : "";
+        return "从月度数据看，" + peak.month() + " 为观测高峰，共 " + peak.observationCount() + " 次" + speciesPart + "，" + direction + "。";
+    }
+
+    private String joinSpeciesNames(List<SpeciesDetailView> species, int limit) {
+        return species.stream()
+                .limit(limit)
+                .map(item -> firstNonBlank(item.chineseName(), item.scientificName(), "未命名物种"))
+                .collect(Collectors.joining("、"));
+    }
+
+    private String joinObservationLocations(List<ObservationView> observations, int limit) {
+        List<String> locations = observations.stream()
+                .map(item -> firstNonBlank(item.locationName(), item.ecosystemName(), "未命名地点"))
+                .distinct()
+                .limit(limit)
+                .toList();
+        return locations.isEmpty() ? "暂无明确地点信息" : String.join("、", locations);
+    }
+
+    private String formatDate(LocalDateTime value) {
+        return value == null ? "-" : value.toLocalDate().format(DATE_FORMATTER);
+    }
+
+    private boolean containsIgnoreCase(String source, String keyword) {
+        if (!StringUtils.hasText(source) || !StringUtils.hasText(keyword)) {
+            return false;
+        }
+        return source.toLowerCase(Locale.ROOT).contains(keyword.trim().toLowerCase(Locale.ROOT));
+    }
+
+    private boolean containsAny(String source, Collection<String> keywords) {
+        if (!StringUtils.hasText(source)) {
+            return false;
+        }
+        return keywords.stream().anyMatch(keyword -> containsIgnoreCase(source, keyword));
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                return value.trim();
+            }
+        }
+        return "";
+    }
+
+    private int resolveLimit(Integer preferred, int fallback) {
+        if (preferred == null || preferred <= 0) {
+            return fallback;
+        }
+        return Math.min(Math.max(preferred, 1), 40);
+    }
+
+    private String normalize(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.replace('\n', ' ').replace('\r', ' ').trim();
+    }
+
+    private String emptyToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private String escapeJson(String value) {
+        return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private record TrendPoint(String month, int observationCount, int speciesCount) {
+    }
+
+    private record ObservationActivity(String observerName, int count) {
+    }
+
+    private record AssistantContext(
+            DashboardSummary dashboardSummary,
+            List<ObservationView> observationViews,
+            List<ObservationDetailView> observations,
+            List<SpeciesDetailView> species,
+            List<TrendPoint> trendPoints,
+            List<ObservationActivity> observerActivities,
+            List<EcosystemAnalyticsPoint> ecosystemAnalytics
+    ) {
+    }
+}

@@ -1,0 +1,7 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="GSMV Full Stack" type="CompoundRunConfigurationType">
+    <toRun name="GSMV Frontend" type="js.build_tools.npm" />
+    <toRun name="GSMV Backend" type="SpringBootApplicationConfigurationType" />
+    <method v="2" />
+  </configuration>
+</component>

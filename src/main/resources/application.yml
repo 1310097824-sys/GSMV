@@ -1,0 +1,63 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: gsmv
+  datasource:
+    url: jdbc:mysql://localhost:3306/gsmv?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: 123456
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  jackson:
+    default-property-inclusion: non_null
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 20MB
+
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+    default-statement-timeout: 15
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+logging:
+  pattern:
+    level: "%5p [traceId:%X{traceId:-}]"
+
+gsmv:
+  ai:
+    low-confidence-threshold: 0.68
+    assistant-observation-limit: 60
+    assistant-species-limit: 20
+    bailian:
+      enabled: true
+      api-key: ${BAILIAN_API_KEY:${DASHSCOPE_API_KEY:}}
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      vision-model: qwen-vl-plus
+    deepseek:
+      enabled: true
+      api-key: ${DEEPSEEK_API_KEY:}
+      base-url: https://api.deepseek.com
+      chat-model: deepseek-chat
+  security:
+    jwt:
+      issuer: gsmv
+      secret: gsmv-secret-key-please-change-in-production-2026
+      access-token-ttl-minutes: 30
+  admin:
+    enabled: true
+    username: admin
+    display-name: 系统管理员
+    bootstrap-password: 123456
+  storage:
+    upload-dir: ${user.dir}/uploads
