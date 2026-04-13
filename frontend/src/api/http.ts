@@ -25,6 +25,16 @@ http.interceptors.response.use(
         window.location.href = '/login'
       }
     }
+
+    const responseMessage = error.response?.data?.message
+    if (typeof responseMessage === 'string' && responseMessage.trim()) {
+      return Promise.reject(new Error(responseMessage.trim()))
+    }
+
+    if (error.code === 'ECONNABORTED') {
+      return Promise.reject(new Error('请求超时，请稍后重试'))
+    }
+
     return Promise.reject(error)
   },
 )

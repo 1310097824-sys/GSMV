@@ -193,6 +193,18 @@
           </template>
 
           <div v-if="aiSummary || aiNotes.length || autocompleteRelatedSpecies.length" class="ai-card__body">
+            <div v-if="duplicateSpeciesRecord && !editingId" class="duplicate-alert">
+              <div>
+                <strong>该物种已存在档案</strong>
+                <p>
+                  系统中已存在
+                  {{ duplicateSpeciesRecord.chineseName || duplicateSpeciesRecord.scientificName }}
+                  的物种档案，建议先查看已有记录，避免重复建档。
+                </p>
+              </div>
+              <el-button plain @click="openDetail(duplicateSpeciesRecord.id)">查看已有档案</el-button>
+            </div>
+
             <div v-if="aiSummary" class="ai-summary">
               <strong>AI 摘要</strong>
               <p>{{ aiSummary }}</p>
@@ -420,6 +432,7 @@ const pendingImageFiles = ref<UploadUserFile[]>([])
 const identifyFileList = ref<UploadUserFile[]>([])
 const identifyResult = ref<AiIdentifyImageResponse | null>(null)
 const autocompleteRelatedSpecies = ref<AiRelatedSpeciesRecord[]>([])
+const duplicateSpeciesRecord = ref<AiRelatedSpeciesRecord | null>(null)
 const translationResult = ref<AiTranslateSpeciesResponse | null>(null)
 const aiSummary = ref('')
 const aiNotes = ref<string[]>([])
@@ -541,6 +554,7 @@ function resetForm() {
 function resetAiState() {
   identifyResult.value = null
   autocompleteRelatedSpecies.value = []
+  duplicateSpeciesRecord.value = null
   translationResult.value = null
   aiSummary.value = ''
   aiNotes.value = []
@@ -650,29 +664,114 @@ async function runIdentifySpecies() {
   }
 }
 
-function applyIdentifyResult() {
+async function applyIdentifyResult() {
   if (!identifyResult.value) {
     return
   }
-  editingId.value = null
-  resetForm()
-  form.chineseName = identifyResult.value.likelyChineseName || ''
-  form.scientificName = identifyResult.value.likelyScientificName || ''
-  autocompleteRelatedSpecies.value = identifyResult.value.relatedSpeciesRecords || []
-  aiSummary.value = identifyResult.value.reasoning || ''
-  aiNotes.value = identifyResult.value.needsHumanReview ? ['当前识别建议人工复核'] : []
-  identifyDialogVisible.value = false
-  dialogVisible.value = true
+  await applyIdentifyPrefill({
+    chineseName: identifyResult.value.likelyChineseName,
+    scientificName: identifyResult.value.likelyScientificName,
+    relatedSpeciesRecords: identifyResult.value.relatedSpeciesRecords || [],
+    summary: identifyResult.value.reasoning || '',
+    notes: identifyResult.value.needsHumanReview ? ['当前识别建议人工复核'] : [],
+  })
 }
 
-function applyIdentifyCandidate(candidate: AiIdentificationCandidate) {
+async function applyIdentifyCandidate(candidate: AiIdentificationCandidate) {
+  await applyIdentifyPrefill({
+    chineseName: candidate.chineseName,
+    scientificName: candidate.scientificName,
+    relatedSpeciesRecords: identifyResult.value?.relatedSpeciesRecords || [],
+    summary: candidate.reason || identifyResult.value?.reasoning || '',
+    notes: ['当前识图结果来自候选项，请结合图片与档案信息人工确认'],
+  })
+}
+
+function normalizeSpeciesName(value?: string) {
+  return (value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s·•_.\-()（）]/g, '')
+}
+
+function findExistingSpeciesRecord(
+  chineseName: string | undefined,
+  scientificName: string | undefined,
+  relatedSpeciesRecords: AiRelatedSpeciesRecord[],
+) {
+  const normalizedChineseName = normalizeSpeciesName(chineseName)
+  const normalizedScientificName = normalizeSpeciesName(scientificName)
+
+  if (!normalizedChineseName && !normalizedScientificName) {
+    return null
+  }
+
+  return (
+    relatedSpeciesRecords.find((item) => {
+      const itemChineseName = normalizeSpeciesName(item.chineseName)
+      const itemScientificName = normalizeSpeciesName(item.scientificName)
+
+      return Boolean(
+        (normalizedScientificName && itemScientificName && normalizedScientificName === itemScientificName) ||
+          (normalizedChineseName && itemChineseName && normalizedChineseName === itemChineseName),
+      )
+    }) || null
+  )
+}
+
+async function confirmDuplicateSpeciesRecord(record: AiRelatedSpeciesRecord) {
+  try {
+    await ElMessageBox.confirm(
+      `系统中已存在“${record.chineseName || record.scientificName}”的物种档案。建议先查看已有记录，避免重复建档。`,
+      '该物种已存在档案',
+      {
+        type: 'warning',
+        distinguishCancelAndClose: true,
+        confirmButtonText: '查看已有档案',
+        cancelButtonText: '仍然新建',
+      },
+    )
+    identifyDialogVisible.value = false
+    openDetail(record.id)
+    return false
+  } catch (error) {
+    if (error === 'cancel') {
+      return true
+    }
+    return false
+  }
+}
+
+async function applyIdentifyPrefill(options: {
+  chineseName?: string
+  scientificName?: string
+  relatedSpeciesRecords: AiRelatedSpeciesRecord[]
+  summary: string
+  notes: string[]
+}) {
+  const duplicateRecord = findExistingSpeciesRecord(
+    options.chineseName,
+    options.scientificName,
+    options.relatedSpeciesRecords,
+  )
+
+  if (duplicateRecord) {
+    const shouldContinue = await confirmDuplicateSpeciesRecord(duplicateRecord)
+    if (!shouldContinue) {
+      return
+    }
+  }
+
   editingId.value = null
   resetForm()
-  form.chineseName = candidate.chineseName || ''
-  form.scientificName = candidate.scientificName || ''
-  autocompleteRelatedSpecies.value = identifyResult.value?.relatedSpeciesRecords || []
-  aiSummary.value = candidate.reason || identifyResult.value?.reasoning || ''
-  aiNotes.value = ['当前识图结果来自候选项，请结合图片与档案信息人工确认']
+  form.chineseName = options.chineseName || ''
+  form.scientificName = options.scientificName || ''
+  autocompleteRelatedSpecies.value = options.relatedSpeciesRecords
+  duplicateSpeciesRecord.value = duplicateRecord
+  aiSummary.value = options.summary
+  aiNotes.value = duplicateRecord
+    ? [...options.notes, `系统中已存在档案：${duplicateRecord.chineseName || duplicateRecord.scientificName}`]
+    : options.notes
   identifyDialogVisible.value = false
   dialogVisible.value = true
 }
@@ -1056,6 +1155,25 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(177, 234, 247, 0.14);
 }
 
+.duplicate-alert {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 186, 110, 0.26);
+  background:
+    linear-gradient(180deg, rgba(255, 194, 120, 0.12), rgba(255, 194, 120, 0.04)),
+    rgba(69, 37, 8, 0.24);
+}
+
+.duplicate-alert p {
+  margin: 8px 0 0;
+  color: rgba(242, 231, 207, 0.88);
+  line-height: 1.72;
+}
+
 .ai-summary p {
   margin: 8px 0 0;
   color: var(--gsmv-muted);
@@ -1229,6 +1347,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 1100px) {
   .ai-card__header,
+  .duplicate-alert,
   .identify-result,
   .identify-panel__actions {
     flex-direction: column;

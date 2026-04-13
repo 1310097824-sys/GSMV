@@ -32,30 +32,30 @@
       </section>
 
       <el-card class="panel-card auth-card" shadow="never">
-      <template #header>
-        <div class="auth-card__header">
-          <span class="auth-card__eyebrow">GSMV</span>
-          <strong>系统登录</strong>
-          <p>进入海洋生物多样性平台，继续处理档案建档、生态观测与统计报表工作。</p>
+        <template #header>
+          <div class="auth-card__header">
+            <span class="auth-card__eyebrow">GSMV</span>
+            <strong>系统登录</strong>
+            <p>进入海洋生物多样性平台，继续处理档案建档、生态观测与统计报表工作。</p>
+          </div>
+        </template>
+
+        <el-form label-position="top" @submit.prevent="handleSubmit">
+          <el-form-item label="用户名">
+            <el-input v-model="form.username" placeholder="请输入用户名" />
+          </el-form-item>
+          <el-form-item label="密码">
+            <el-input v-model="form.password" type="password" show-password placeholder="请输入密码" />
+          </el-form-item>
+          <el-button type="primary" size="large" class="auth-card__button" :loading="authStore.loading" @click="handleSubmit">
+            登录
+          </el-button>
+        </el-form>
+
+        <div class="auth-card__footer">
+          <span>学生和公众用户可先申请注册</span>
+          <RouterLink to="/register">去注册</RouterLink>
         </div>
-      </template>
-
-      <el-form label-position="top" @submit.prevent="handleSubmit">
-        <el-form-item label="用户名">
-          <el-input v-model="form.username" placeholder="请输入用户名" />
-        </el-form-item>
-        <el-form-item label="密码">
-          <el-input v-model="form.password" type="password" show-password placeholder="请输入密码" />
-        </el-form-item>
-        <el-button type="primary" size="large" class="auth-card__button" :loading="authStore.loading" @click="handleSubmit">
-          登录
-        </el-button>
-      </el-form>
-
-      <div class="auth-card__footer">
-        <span>学生和公众用户可先申请注册</span>
-        <RouterLink to="/register">去注册</RouterLink>
-      </div>
       </el-card>
     </div>
   </div>

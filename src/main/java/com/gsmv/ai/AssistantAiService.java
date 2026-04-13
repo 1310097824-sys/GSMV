@@ -67,6 +67,20 @@ public class AssistantAiService {
     private static final List<String> ACTIVITY_KEYWORDS = List.of("谁最活跃", "最活跃", "观测次数", "观测活动", "谁的观测", "观察活动");
     private static final List<String> ECOSYSTEM_HINTS = List.of("珊瑚礁", "红树林", "海草床", "深海", "近海", "海湾", "河口", "海域");
     private static final List<String> LOCATION_SUFFIXES = List.of("附近", "周边", "近海", "沿海", "海域", "海湾", "海峡", "样带");
+    private static final List<String> MAP_SCOPE_KEYWORDS = List.of(
+            "地图覆盖", "地图涵盖", "覆盖范围", "涵盖范围", "什么范围", "哪些区域", "哪些海域", "哪里有点位", "地图上都有哪些",
+            "地图里有什么", "覆盖到哪", "分布在哪些地方"
+    );
+    private static final List<String> HELP_KEYWORDS = List.of(
+            "你能做什么", "可以问什么", "怎么问", "怎么用", "能查什么", "你会什么", "你能帮我什么"
+    );
+    private static final Set<String> CLARIFY_ONLY_MESSAGES = Set.of(
+            "?", "？", "啥", "什么", "什么意思", "然后呢", "继续", "展开", "详细点", "再说说", "具体呢"
+    );
+    private static final List<String> FOLLOW_UP_HINTS = List.of(
+            "只看", "只筛", "换成", "改成", "按", "那", "那就", "那现在", "这里", "这个范围", "这个区域",
+            "再看", "继续看", "近30天", "近三年", "最近", "现在呢", "然后呢", "详细点", "展开点位"
+    );
 
     private final AiProperties aiProperties;
     private final ObservationService observationService;
@@ -107,9 +121,14 @@ public class AssistantAiService {
             return withCacheHit(cachedResponse, true);
         }
 
-        AssistantAiDtos.StructuredQuery plan = extractStructuredQueryFast(request.message());
-        AssistantContext context = collectContext(plan);
-        AssistantAiDtos.ChatResponse response = buildLocalResponse(plan, context);
+        AssistantAiDtos.StructuredQuery plan = extractStructuredQueryFast(request.message(), request.history());
+        AssistantAiDtos.ChatResponse response;
+        if (isLightweightIntent(plan.intent())) {
+            response = buildLightweightResponse(plan, request);
+        } else {
+            AssistantContext context = collectContext(plan);
+            response = buildLocalResponse(plan, context);
+        }
         assistantQueryCache.put(cacheKey, response);
 
         auditService.record(
@@ -210,6 +229,34 @@ public class AssistantAiService {
                 riskOnly,
                 inferLimit(message, intent)
         );
+    }
+
+    private AssistantAiDtos.StructuredQuery extractStructuredQueryFast(
+            String question,
+            List<AssistantAiDtos.ConversationMessage> history
+    ) {
+        return extractStructuredQueryFast(question, history, 0);
+    }
+
+    private AssistantAiDtos.StructuredQuery extractStructuredQueryFast(
+            String question,
+            List<AssistantAiDtos.ConversationMessage> history,
+            int depth
+    ) {
+        AssistantAiDtos.StructuredQuery currentPlan = extractStructuredQueryFast(question);
+        if (depth >= 3 || !shouldInheritContext(question, currentPlan)) {
+            return currentPlan;
+        }
+        PreviousUserTurn previousTurn = findLatestPreviousUserTurn(history, question);
+        if (previousTurn == null || !StringUtils.hasText(previousTurn.message())) {
+            return currentPlan;
+        }
+        AssistantAiDtos.StructuredQuery previousPlan = extractStructuredQueryFast(
+                previousTurn.message(),
+                previousTurn.earlierHistory(),
+                depth + 1
+        );
+        return mergeStructuredQuery(previousPlan, currentPlan, question);
     }
 
     private AssistantContext collectContext(AssistantAiDtos.StructuredQuery plan) {
@@ -333,6 +380,7 @@ public class AssistantAiService {
             AssistantContext context
     ) {
         String answer = switch (safe(plan.intent())) {
+            case "map_scope" -> buildMapScopeAnswer(plan, context);
             case "observation_activity" -> buildObservationActivityAnswer(plan, context);
             case "ecosystem_trend" -> buildTrendAnswer(plan, context);
             case "observation_lookup" -> buildObservationAnswer(plan, context);
@@ -344,6 +392,24 @@ public class AssistantAiService {
                 plan,
                 buildHighlights(plan, context),
                 buildEvidence(plan, context),
+                false
+        );
+    }
+
+    private AssistantAiDtos.ChatResponse buildLightweightResponse(
+            AssistantAiDtos.StructuredQuery plan,
+            AssistantAiDtos.ChatRequest request
+    ) {
+        String answer = switch (safe(plan.intent())) {
+            case "clarify" -> buildClarificationAnswer(request);
+            case "capability_help" -> buildCapabilityAnswer();
+            default -> "我已经收到你的问题了，但当前还缺少足够的查询线索。你可以补充地点、时间或物种名，我会继续往下查。";
+        };
+        return new AssistantAiDtos.ChatResponse(
+                answer,
+                plan,
+                buildLightweightHighlights(plan),
+                buildLightweightEvidence(plan, request),
                 false
         );
     }
@@ -479,21 +545,71 @@ public class AssistantAiService {
         return answer.toString();
     }
 
+    private String buildMapScopeAnswer(AssistantAiDtos.StructuredQuery plan, AssistantContext context) {
+        if (context.observationViews().isEmpty() && context.ecosystemAnalytics().isEmpty()) {
+            return buildNoDataAnswer(plan, context.dashboardSummary());
+        }
+
+        List<String> locations = context.observationViews().stream()
+                .map(item -> firstNonBlank(item.locationName(), item.ecosystemName()))
+                .filter(StringUtils::hasText)
+                .distinct()
+                .limit(6)
+                .toList();
+        List<String> ecosystems = context.ecosystemAnalytics().stream()
+                .map(item -> firstNonBlank(item.ecosystemName(), item.ecosystemType()))
+                .filter(StringUtils::hasText)
+                .distinct()
+                .limit(4)
+                .toList();
+
+        StringBuilder answer = new StringBuilder();
+        if (StringUtils.hasText(plan.locationKeyword())) {
+            answer.append("这张地图当前已经按“")
+                    .append(plan.locationKeyword())
+                    .append("”做了范围聚焦，");
+        } else {
+            answer.append("这张地图展示的是系统里已经录入的观测点和生态系统数据，不是单一一块固定海域，");
+        }
+        if (!locations.isEmpty()) {
+            answer.append("目前主要覆盖 ")
+                    .append(String.join("、", locations))
+                    .append(" 等区域");
+            if (context.observationViews().size() > locations.size()) {
+                answer.append("，共 ").append(context.observationViews().size()).append(" 个点位");
+            }
+            answer.append("。");
+        }
+        if (!ecosystems.isEmpty()) {
+            answer.append(" 涉及的生态系统类型主要有 ")
+                    .append(String.join("、", ecosystems))
+                    .append("。");
+        }
+        if (!context.species().isEmpty()) {
+            answer.append(" 这些区域里的代表性物种包括 ")
+                    .append(joinSpeciesNames(context.species(), 5))
+                    .append("。");
+        }
+        answer.append(" 如果你想继续缩小范围，可以直接追问“只看湛江近海”“只看南海北部”或“只看近30天点位”。");
+        return answer.toString();
+    }
+
     private String buildOverviewAnswer(AssistantAiDtos.StructuredQuery plan, AssistantContext context) {
         if (context.species().isEmpty() && context.observationViews().isEmpty()) {
             return buildNoDataAnswer(plan, context.dashboardSummary());
         }
 
+        String focus = firstNonBlank(plan.locationKeyword(), plan.ecosystemKeyword(), plan.speciesKeyword());
         StringBuilder answer = new StringBuilder();
-        answer.append("当前系统概况为：物种档案 ")
-                .append(context.dashboardSummary().totalSpecies())
-                .append(" 条，观测记录 ")
-                .append(context.dashboardSummary().totalObservations())
-                .append(" 条，生态系统 ")
-                .append(context.dashboardSummary().totalEcosystems())
-                .append(" 个。");
+        if (StringUtils.hasText(focus)) {
+            answer.append("围绕“")
+                    .append(focus)
+                    .append("”这部分数据来看，");
+        } else {
+            answer.append("先给你一个和当前问题最相关的概览：");
+        }
         if (!context.species().isEmpty()) {
-            answer.append(" 当前问题关联的代表性物种包括 ")
+            answer.append(" 代表性物种包括 ")
                     .append(joinSpeciesNames(context.species(), 5))
                     .append("。");
         }
@@ -502,6 +618,13 @@ public class AssistantAiService {
                     .append(joinObservationLocations(context.observationViews(), 4))
                     .append("。");
         }
+        answer.append(" 系统当前累计保存物种档案 ")
+                .append(context.dashboardSummary().totalSpecies())
+                .append(" 条、观测记录 ")
+                .append(context.dashboardSummary().totalObservations())
+                .append(" 条、生态系统 ")
+                .append(context.dashboardSummary().totalEcosystems())
+                .append(" 个。");
         return answer.toString();
     }
 
@@ -531,6 +654,22 @@ public class AssistantAiService {
             highlights.add("当前条件下没有直接命中完整数据，建议缩小时间或地点范围再试");
         }
         return highlights.stream().limit(4).toList();
+    }
+
+    private List<String> buildLightweightHighlights(AssistantAiDtos.StructuredQuery plan) {
+        return switch (safe(plan.intent())) {
+            case "clarify" -> List.of(
+                    "当前问题太短，系统还拿不到明确查询目标",
+                    "补充地点、时间或对象后，回答会更具体",
+                    "可以直接追问地图范围、观测记录、物种分布或趋势"
+            );
+            case "capability_help" -> List.of(
+                    "支持物种分布、观测记录、生态系统和趋势总结",
+                    "支持模糊地名识别，例如湛江周边、南海北部、近岸样带",
+                    "重复问题会优先命中缓存，返回更快"
+            );
+            default -> List.of("当前已切换到轻量回答模式");
+        };
     }
 
     private List<AssistantAiDtos.EvidenceItem> buildEvidence(AssistantAiDtos.StructuredQuery plan, AssistantContext context) {
@@ -573,6 +712,35 @@ public class AssistantAiService {
             ));
         }
         return evidence.stream().limit(6).toList();
+    }
+
+    private List<AssistantAiDtos.EvidenceItem> buildLightweightEvidence(
+            AssistantAiDtos.StructuredQuery plan,
+            AssistantAiDtos.ChatRequest request
+    ) {
+        List<AssistantAiDtos.EvidenceItem> evidence = new ArrayList<>();
+        if ("clarify".equals(safe(plan.intent()))) {
+            String previousQuestion = findLatestUserQuestion(request.history(), request.message());
+            evidence.add(new AssistantAiDtos.EvidenceItem(
+                    "hint",
+                    "提问建议",
+                    StringUtils.hasText(previousQuestion)
+                            ? "如果你是在继续上一题“" + truncateForReply(previousQuestion, 18) + "”，可以直接补一句“只看范围”“展开点位”或“按近30天再看”。"
+                            : "可以补充地点、时间、生态系统或物种名，例如“近30天湛江附近有哪些观测记录”。"
+            ));
+            return evidence;
+        }
+        evidence.add(new AssistantAiDtos.EvidenceItem(
+                "capability",
+                "支持的提问方式",
+                "可直接提问物种分布、观测地点、生态系统趋势、保护等级、观测活跃度等问题。"
+        ));
+        evidence.add(new AssistantAiDtos.EvidenceItem(
+                "example",
+                "示例问题",
+                "例如：最近三年在湛江附近观测到的濒危物种有哪些？"
+        ));
+        return evidence;
     }
 
     private boolean matchesBasicFilters(ObservationView item, AssistantAiDtos.StructuredQuery plan) {
@@ -756,10 +924,22 @@ public class AssistantAiService {
         if (containsAny(message, List.of("列出", "哪些", "有哪些"))) {
             return "observation_lookup".equals(intent) ? 10 : 8;
         }
+        if ("clarify".equals(intent) || "capability_help".equals(intent)) {
+            return 4;
+        }
         return "overview".equals(intent) ? 6 : 8;
     }
 
     private String inferIntent(String message, String speciesKeyword, String ecosystemKeyword, boolean includeTrend, boolean riskOnly) {
+        if (isClarifyOnlyMessage(message)) {
+            return "clarify";
+        }
+        if (containsAny(message, HELP_KEYWORDS)) {
+            return "capability_help";
+        }
+        if (isMapScopeQuestion(message)) {
+            return "map_scope";
+        }
         if (containsAny(message, ACTIVITY_KEYWORDS)) {
             return "observation_activity";
         }
@@ -777,6 +957,110 @@ public class AssistantAiService {
             return "species_lookup";
         }
         return "overview";
+    }
+
+    private boolean isClarifyOnlyMessage(String message) {
+        String compact = normalize(message).replaceAll("\\s+", "");
+        if (!StringUtils.hasText(compact)) {
+            return true;
+        }
+        if (CLARIFY_ONLY_MESSAGES.contains(compact)) {
+            return true;
+        }
+        return compact.length() <= 2
+                && compact.chars().allMatch(ch -> !Character.isLetterOrDigit(ch) || ch == '?' || ch == '？');
+    }
+
+    private boolean isMapScopeQuestion(String message) {
+        return containsAny(message, MAP_SCOPE_KEYWORDS)
+                || (containsAny(message, List.of("地图", "点位"))
+                && containsAny(message, List.of("范围", "覆盖", "涵盖", "区域", "海域", "哪里", "地方")));
+    }
+
+    private boolean shouldInheritContext(String message, AssistantAiDtos.StructuredQuery currentPlan) {
+        if (!StringUtils.hasText(message)) {
+            return false;
+        }
+        String intent = safe(currentPlan.intent());
+        if ("capability_help".equals(intent) || "clarify".equals(intent)) {
+            return false;
+        }
+        if (isFilterOnlyFollowUp(message, currentPlan)) {
+            return true;
+        }
+        return "overview".equals(intent)
+                && (StringUtils.hasText(currentPlan.locationKeyword())
+                || StringUtils.hasText(currentPlan.ecosystemKeyword())
+                || StringUtils.hasText(currentPlan.speciesKeyword())
+                || currentPlan.recentDays() != null
+                || currentPlan.yearsBack() != null
+                || StringUtils.hasText(currentPlan.protectionLevel())
+                || StringUtils.hasText(currentPlan.iucnStatus())
+                || currentPlan.riskOnly());
+    }
+
+    private boolean isFilterOnlyFollowUp(String message, AssistantAiDtos.StructuredQuery currentPlan) {
+        String normalized = normalize(message);
+        if (!StringUtils.hasText(normalized) || normalized.length() > 18) {
+            return false;
+        }
+        if (!containsAny(normalized, FOLLOW_UP_HINTS)
+                && !StringUtils.hasText(currentPlan.locationKeyword())
+                && currentPlan.recentDays() == null
+                && currentPlan.yearsBack() == null
+                && !StringUtils.hasText(currentPlan.protectionLevel())
+                && !StringUtils.hasText(currentPlan.iucnStatus())
+                && !currentPlan.riskOnly()) {
+            return false;
+        }
+        return !containsAny(normalized, HELP_KEYWORDS)
+                && !isMapScopeQuestion(normalized)
+                && !containsAny(normalized, ACTIVITY_KEYWORDS)
+                && !containsAny(normalized, TREND_KEYWORDS)
+                && !containsAny(normalized, List.of("物种", "观测记录", "生态系统", "分布", "趋势", "保护等级", "濒危"));
+    }
+
+    private AssistantAiDtos.StructuredQuery mergeStructuredQuery(
+            AssistantAiDtos.StructuredQuery previousPlan,
+            AssistantAiDtos.StructuredQuery currentPlan,
+            String currentMessage
+    ) {
+        boolean filterOnlyFollowUp = isFilterOnlyFollowUp(currentMessage, currentPlan);
+        String mergedIntent = safe(currentPlan.intent());
+        if ((filterOnlyFollowUp || "overview".equals(mergedIntent))
+                && StringUtils.hasText(previousPlan.intent())
+                && !"overview".equals(previousPlan.intent())
+                && !"clarify".equals(previousPlan.intent())
+                && !"capability_help".equals(previousPlan.intent())) {
+            mergedIntent = previousPlan.intent();
+        }
+
+        Integer mergedRecentDays;
+        Integer mergedYearsBack;
+        if (currentPlan.recentDays() != null) {
+            mergedRecentDays = currentPlan.recentDays();
+            mergedYearsBack = null;
+        } else if (currentPlan.yearsBack() != null) {
+            mergedYearsBack = currentPlan.yearsBack();
+            mergedRecentDays = null;
+        } else {
+            mergedRecentDays = previousPlan.recentDays();
+            mergedYearsBack = previousPlan.yearsBack();
+        }
+
+        return new AssistantAiDtos.StructuredQuery(
+                mergedIntent,
+                firstNonBlank(currentPlan.locationKeyword(), previousPlan.locationKeyword()),
+                firstNonBlank(currentPlan.ecosystemKeyword(), previousPlan.ecosystemKeyword()),
+                firstNonBlank(currentPlan.speciesKeyword(), previousPlan.speciesKeyword()),
+                firstNonBlank(currentPlan.protectionLevel(), previousPlan.protectionLevel()),
+                firstNonBlank(currentPlan.iucnStatus(), previousPlan.iucnStatus()),
+                mergedYearsBack,
+                mergedRecentDays,
+                currentPlan.includeTrend() || previousPlan.includeTrend(),
+                currentPlan.riskOnly() || previousPlan.riskOnly(),
+                currentPlan.limit() != null ? currentPlan.limit() : previousPlan.limit()
+        );
     }
 
     private Integer extractNumber(String source, Pattern pattern) {
@@ -965,7 +1249,7 @@ public class AssistantAiService {
 
     private String buildNoDataAnswer(AssistantAiDtos.StructuredQuery plan, DashboardSummary dashboardSummary) {
         StringBuilder answer = new StringBuilder();
-        answer.append("当前系统数据暂不足以直接回答这个问题。")
+        answer.append("当前还没有检索到足够的数据来直接回答这个问题。")
                 .append(" 目前系统共有物种档案 ")
                 .append(dashboardSummary.totalSpecies())
                 .append(" 条、观测记录 ")
@@ -978,6 +1262,8 @@ public class AssistantAiService {
         }
         if (StringUtils.hasText(plan.speciesKeyword())) {
             answer.append(" 建议尝试只保留物种中文名或学名再次查询。");
+        } else {
+            answer.append(" 你也可以换一种更具体的问法，比如补充地点、时间范围或生态系统名称。");
         }
         return answer.toString();
     }
@@ -1088,10 +1374,74 @@ public class AssistantAiService {
         return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
+    private boolean isLightweightIntent(String intent) {
+        String normalizedIntent = safe(intent);
+        return "clarify".equals(normalizedIntent) || "capability_help".equals(normalizedIntent);
+    }
+
+    private String buildClarificationAnswer(AssistantAiDtos.ChatRequest request) {
+        String previousQuestion = findLatestUserQuestion(request.history(), request.message());
+        if (StringUtils.hasText(previousQuestion)) {
+            return "这句追问还不够明确。"
+                    + " 如果你是在继续上一题“"
+                    + truncateForReply(previousQuestion, 18)
+                    + "”，可以直接补一句“只看范围”“展开点位细节”或“按近30天再看一遍”，我就能顺着往下答。";
+        }
+        return "这句问题现在还太短，我暂时分不清你是想看地图范围、物种分布、观测记录，还是趋势分析。"
+                + " 你可以补充地点、时间或对象，比如“这张生态地图覆盖哪些海域”或“近30天湛江附近有哪些观测记录”。";
+    }
+
+    private String buildCapabilityAnswer() {
+        return "我更擅长帮你查这几类问题：物种分布与保护等级、某个海域或生态系统里的观测记录、近一段时间的变化趋势、以及谁的观测最活跃。"
+                + " 你可以直接把地点、时间和对象一起说出来，我会先转成结构化查询，再给你一段更像科研助手的总结。";
+    }
+
+    private String findLatestUserQuestion(
+            List<AssistantAiDtos.ConversationMessage> history,
+            String currentMessage
+    ) {
+        PreviousUserTurn previousTurn = findLatestPreviousUserTurn(history, currentMessage);
+        return previousTurn == null ? null : previousTurn.message();
+    }
+
+    private String truncateForReply(String value, int maxLength) {
+        if (!StringUtils.hasText(value) || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, Math.max(0, maxLength)) + "…";
+    }
+
+    private PreviousUserTurn findLatestPreviousUserTurn(
+            List<AssistantAiDtos.ConversationMessage> history,
+            String currentMessage
+    ) {
+        if (history == null || history.isEmpty()) {
+            return null;
+        }
+        String normalizedCurrent = normalize(currentMessage);
+        for (int i = history.size() - 1; i >= 0; i--) {
+            AssistantAiDtos.ConversationMessage item = history.get(i);
+            if (item == null || !"user".equalsIgnoreCase(item.role()) || !StringUtils.hasText(item.content())) {
+                continue;
+            }
+            String candidate = normalize(item.content());
+            if (!candidate.equalsIgnoreCase(normalizedCurrent)) {
+                return new PreviousUserTurn(candidate, List.copyOf(history.subList(0, i)));
+            }
+        }
+        return null;
+    }
+
     private record TrendPoint(String month, int observationCount, int speciesCount) {
     }
 
     private record ObservationActivity(String observerName, int count) {
+    }
+
+    private record PreviousUserTurn(
+            String message,
+            List<AssistantAiDtos.ConversationMessage> earlierHistory
+    ) {
     }
 
     private record AssistantContext(
