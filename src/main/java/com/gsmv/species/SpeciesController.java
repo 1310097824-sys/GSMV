@@ -9,6 +9,7 @@ import com.gsmv.species.dto.SpeciesImageView;
 import com.gsmv.species.dto.SpeciesSaveRequest;
 import com.gsmv.species.dto.SpeciesView;
 import com.gsmv.species.dto.TaxonOption;
+import com.gsmv.versioning.dto.EntityVersionView;
 import jakarta.validation.Valid;
 import java.util.List;
 import org.springframework.http.CacheControl;
@@ -70,6 +71,12 @@ public class SpeciesController {
         return ApiResponse.success(speciesService.getSpecies(id));
     }
 
+    @GetMapping("/{id}/versions")
+    @PreAuthorize("hasAuthority('SPECIES_READ')")
+    public ApiResponse<List<EntityVersionView>> listVersions(@PathVariable Long id) {
+        return ApiResponse.success(speciesService.listVersions(id));
+    }
+
     @GetMapping("/taxa")
     @PreAuthorize("hasAuthority('SPECIES_READ')")
     public ApiResponse<List<TaxonOption>> listTaxa() {
@@ -86,6 +93,12 @@ public class SpeciesController {
     @PreAuthorize("hasAuthority('SPECIES_WRITE')")
     public ApiResponse<SpeciesDetailView> updateSpecies(@PathVariable Long id, @Valid @RequestBody SpeciesSaveRequest request) {
         return ApiResponse.success(speciesService.updateSpecies(id, request));
+    }
+
+    @PostMapping("/{id}/versions/{versionId}/rollback")
+    @PreAuthorize("hasAuthority('SPECIES_WRITE')")
+    public ApiResponse<SpeciesDetailView> rollbackSpecies(@PathVariable Long id, @PathVariable Long versionId) {
+        return ApiResponse.success(speciesService.rollbackSpecies(id, versionId));
     }
 
     @DeleteMapping("/{id}")

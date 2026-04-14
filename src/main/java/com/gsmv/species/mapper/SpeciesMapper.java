@@ -201,6 +201,19 @@ public interface SpeciesMapper {
     @Options(useGeneratedKeys = true, keyProperty = "id")
     void insert(Species species);
 
+    @Insert("""
+            INSERT INTO species (
+              id, taxon_id, protection_level, iucn_status, description,
+              morphology, habit, habitat, distribution, distribution_lat, distribution_lng,
+              geo_range_text, video_url, reference_text, status
+            ) VALUES (
+              #{id}, #{taxonId}, #{protectionLevel}, #{iucnStatus}, #{description},
+              #{morphology}, #{habit}, #{habitat}, #{distribution}, #{distributionLat}, #{distributionLng},
+              #{geoRangeText}, #{videoUrl}, #{referenceText}, #{status}
+            )
+            """)
+    void insertWithId(Species species);
+
     @Update("""
             UPDATE species
             SET taxon_id = #{taxonId},

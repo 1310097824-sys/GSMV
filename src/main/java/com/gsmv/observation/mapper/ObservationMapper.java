@@ -159,9 +159,21 @@ public interface ObservationMapper {
     @Options(useGeneratedKeys = true, keyProperty = "id")
     void insert(Observation observation);
 
+    @Insert("""
+            INSERT INTO observation (
+              id, ecosystem_id, observer_user_id, observed_at, location_lat, location_lng,
+              location_point, location_name, env_json, note
+            ) VALUES (
+              #{id}, #{ecosystemId}, #{observerUserId}, #{observedAt}, #{locationLat}, #{locationLng},
+              ST_SRID(Point(#{locationLng}, #{locationLat}), 4326), #{locationName}, #{envJson}, #{note}
+            )
+            """)
+    void insertWithId(Observation observation);
+
     @Update("""
             UPDATE observation
             SET ecosystem_id = #{ecosystemId},
+                observer_user_id = #{observerUserId},
                 observed_at = #{observedAt},
                 location_lat = #{locationLat},
                 location_lng = #{locationLng},

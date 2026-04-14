@@ -104,23 +104,40 @@
           </div>
         </el-card>
       </div>
+
+      <VersionHistoryPanel
+        title="版本历史与回溯"
+        description="查看每次档案变更的字段差异、操作人和时间，并可一键回滚到指定版本。"
+        empty-text="当前物种还没有版本记录。"
+        :versions="versions"
+        :loading="versionsLoading"
+        :can-rollback="canRollback"
+        :rollbacking-version-id="rollbackingVersionId"
+        @rollback="handleRollback"
+      />
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
-import { fetchSpeciesDetail } from '@/api/species'
-import { listenDataChanged } from '@/utils/dataSync'
-import type { SpeciesDetailView } from '@/types/gsmv'
+import { fetchSpeciesDetail, fetchSpeciesVersions, rollbackSpeciesVersion } from '@/api/species'
+import VersionHistoryPanel from '@/components/VersionHistoryPanel.vue'
+import { useAuthStore } from '@/stores/auth'
+import { listenDataChanged, notifyDataChanged } from '@/utils/dataSync'
+import type { EntityVersionView, SpeciesDetailView } from '@/types/gsmv'
 
 const route = useRoute()
 const router = useRouter()
+const authStore = useAuthStore()
 
 const loading = ref(false)
 const detail = ref<SpeciesDetailView | null>(null)
+const versions = ref<EntityVersionView[]>([])
+const versionsLoading = ref(false)
+const rollbackingVersionId = ref<number | null>(null)
 let stopDataSync: (() => void) | undefined
 let refreshTimer: number | undefined
 
@@ -133,6 +150,7 @@ const referenceItems = computed(() =>
     .filter(Boolean),
 )
 const isDirectVideo = computed(() => /\.(mp4|webm|ogg)(\?.*)?$/i.test(detail.value?.videoUrl || ''))
+const canRollback = computed(() => authStore.authorities.includes('SPECIES_WRITE'))
 
 async function loadDetail() {
   if (!speciesId.value || Number.isNaN(speciesId.value)) {
@@ -151,41 +169,90 @@ async function loadDetail() {
   }
 }
 
+async function loadVersions() {
+  if (!speciesId.value || Number.isNaN(speciesId.value)) {
+    return
+  }
+
+  versionsLoading.value = true
+  try {
+    versions.value = await fetchSpeciesVersions(speciesId.value)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '版本历史加载失败')
+  } finally {
+    versionsLoading.value = false
+  }
+}
+
+async function refreshPage() {
+  await Promise.all([loadDetail(), loadVersions()])
+}
+
 function goBack() {
   router.push('/species')
 }
 
+async function handleRollback(version: EntityVersionView) {
+  if (!speciesId.value || Number.isNaN(speciesId.value)) {
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `回滚后会将当前物种档案恢复到 V${version.versionNo}，并生成一条新的回滚记录。确认继续吗？`,
+      '回滚物种档案',
+      {
+        type: 'warning',
+        confirmButtonText: '确认回滚',
+        cancelButtonText: '取消',
+      },
+    )
+    rollbackingVersionId.value = version.id
+    detail.value = await rollbackSpeciesVersion(speciesId.value, version.id)
+    notifyDataChanged('species')
+    ElMessage.success(`已回滚到 V${version.versionNo}`)
+    await refreshPage()
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') {
+      return
+    }
+    ElMessage.error(error instanceof Error ? error.message : '物种档案回滚失败')
+  } finally {
+    rollbackingVersionId.value = null
+  }
+}
+
 function handleFocus() {
-  void loadDetail()
+  void refreshPage()
 }
 
 function handleVisibilityChange() {
   if (!document.hidden) {
-    void loadDetail()
+    void refreshPage()
   }
 }
 
 watch(
   () => route.params.id,
   () => {
-    void loadDetail()
+    void refreshPage()
   },
 )
 
 onMounted(async () => {
   stopDataSync = listenDataChanged((detailEvent) => {
     if (detailEvent.type === 'species') {
-      void loadDetail()
+      void refreshPage()
     }
   })
   window.addEventListener('focus', handleFocus)
   document.addEventListener('visibilitychange', handleVisibilityChange)
   refreshTimer = window.setInterval(() => {
     if (!document.hidden) {
-      void loadDetail()
+      void refreshPage()
     }
   }, 10000)
-  await loadDetail()
+  await refreshPage()
 })
 
 onBeforeUnmount(() => {

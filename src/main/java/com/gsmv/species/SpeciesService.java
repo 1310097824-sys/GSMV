@@ -9,10 +9,14 @@ import com.gsmv.common.exception.NotFoundException;
 import com.gsmv.media.MediaFileService;
 import com.gsmv.media.model.MediaFile;
 import com.gsmv.security.SecurityUtils;
+import com.gsmv.versioning.EntityVersionService;
+import com.gsmv.versioning.dto.EntityVersionView;
+import com.gsmv.versioning.dto.VersionFieldChangeView;
 import com.gsmv.species.dto.SpeciesDetailView;
 import com.gsmv.species.dto.SpeciesImageView;
 import com.gsmv.species.dto.SpeciesRow;
 import com.gsmv.species.dto.SpeciesSaveRequest;
+import com.gsmv.species.dto.SpeciesVersionSnapshot;
 import com.gsmv.species.dto.SpeciesView;
 import com.gsmv.species.dto.TaxonOption;
 import com.gsmv.species.mapper.SpeciesMapper;
@@ -44,19 +48,22 @@ public class SpeciesService {
     private final AuditService auditService;
     private final MediaFileService mediaFileService;
     private final AssistantQueryCache assistantQueryCache;
+    private final EntityVersionService entityVersionService;
 
     public SpeciesService(
             SpeciesMapper speciesMapper,
             TaxonMapper taxonMapper,
             AuditService auditService,
             MediaFileService mediaFileService,
-            AssistantQueryCache assistantQueryCache
+            AssistantQueryCache assistantQueryCache,
+            EntityVersionService entityVersionService
     ) {
         this.speciesMapper = speciesMapper;
         this.taxonMapper = taxonMapper;
         this.auditService = auditService;
         this.mediaFileService = mediaFileService;
         this.assistantQueryCache = assistantQueryCache;
+        this.entityVersionService = entityVersionService;
     }
 
     public PageResponse<SpeciesView> listSpecies(
@@ -121,15 +128,33 @@ public class SpeciesService {
                 .toList();
     }
 
+    public List<EntityVersionView> listVersions(Long id) {
+        if (speciesMapper.findById(id) == null) {
+            throw new NotFoundException("物种不存在");
+        }
+        return entityVersionService.listVersions(EntityVersionService.ENTITY_TYPE_SPECIES, id);
+    }
+
     @Transactional
     public SpeciesDetailView createSpecies(SpeciesSaveRequest request) {
+        Long currentUserId = SecurityUtils.requireCurrentUser().userId();
         Long taxonId = resolveSpeciesTaxonId(request);
         Species species = toEntity(request, taxonId);
         speciesMapper.insert(species);
+        SpeciesDetailView detailView = getSpecies(species.getId());
+        entityVersionService.recordVersion(
+                EntityVersionService.ENTITY_TYPE_SPECIES,
+                species.getId(),
+                "CREATE",
+                SpeciesVersionSnapshot.fromDetail(detailView),
+                buildSpeciesChanges(null, SpeciesVersionSnapshot.fromDetail(detailView)),
+                currentUserId,
+                null
+        );
         assistantQueryCache.invalidateAll();
-        auditService.record(SecurityUtils.requireCurrentUser().userId(), "SPECIES", "CREATE", "SPECIES", species.getId(), true,
+        auditService.record(currentUserId, "SPECIES", "CREATE", "SPECIES", species.getId(), true,
                 "{\"scientificName\":\"" + escapeJson(request.scientificName()) + "\"}");
-        return getSpecies(species.getId());
+        return detailView;
     }
 
     @Transactional
@@ -137,18 +162,32 @@ public class SpeciesService {
         if (speciesMapper.findById(id) == null) {
             throw new NotFoundException("物种不存在");
         }
+        Long currentUserId = SecurityUtils.requireCurrentUser().userId();
+        SpeciesVersionSnapshot beforeSnapshot = SpeciesVersionSnapshot.fromDetail(getSpecies(id));
         Long taxonId = resolveSpeciesTaxonId(request);
         Species species = toEntity(request, taxonId);
         species.setId(id);
         speciesMapper.update(species);
+        SpeciesDetailView detailView = getSpecies(id);
+        SpeciesVersionSnapshot afterSnapshot = SpeciesVersionSnapshot.fromDetail(detailView);
+        entityVersionService.recordVersion(
+                EntityVersionService.ENTITY_TYPE_SPECIES,
+                id,
+                "UPDATE",
+                afterSnapshot,
+                buildSpeciesChanges(beforeSnapshot, afterSnapshot),
+                currentUserId,
+                null
+        );
         assistantQueryCache.invalidateAll();
-        auditService.record(SecurityUtils.requireCurrentUser().userId(), "SPECIES", "UPDATE", "SPECIES", id, true,
+        auditService.record(currentUserId, "SPECIES", "UPDATE", "SPECIES", id, true,
                 "{\"scientificName\":\"" + escapeJson(request.scientificName()) + "\"}");
-        return getSpecies(id);
+        return detailView;
     }
 
     @Transactional
     public void deleteSpecies(Long id) {
+        Long currentUserId = SecurityUtils.requireCurrentUser().userId();
         Species existing = speciesMapper.findById(id);
         if (existing == null) {
             throw new NotFoundException("物种不存在");
@@ -156,10 +195,20 @@ public class SpeciesService {
         if (speciesMapper.countObservationReferences(id) > 0) {
             throw new BusinessException(ErrorCode.CONFLICT, "该物种已被观测记录引用，无法删除", HttpStatus.CONFLICT);
         }
+        SpeciesVersionSnapshot beforeSnapshot = SpeciesVersionSnapshot.fromDetail(getSpecies(id));
         mediaFileService.deleteByBusiness(SPECIES_IMAGE_BUSINESS_TYPE, id);
         speciesMapper.deleteById(id);
+        entityVersionService.recordVersion(
+                EntityVersionService.ENTITY_TYPE_SPECIES,
+                id,
+                "DELETE",
+                beforeSnapshot,
+                buildSpeciesChanges(beforeSnapshot, null),
+                currentUserId,
+                null
+        );
         assistantQueryCache.invalidateAll();
-        auditService.record(SecurityUtils.requireCurrentUser().userId(), "SPECIES", "DELETE", "SPECIES", id, true,
+        auditService.record(currentUserId, "SPECIES", "DELETE", "SPECIES", id, true,
                 "{\"speciesId\":" + id + "}");
     }
 
@@ -181,6 +230,44 @@ public class SpeciesService {
             throw new NotFoundException("物种图片不存在");
         }
         return mediaFile;
+    }
+
+    @Transactional
+    public SpeciesDetailView rollbackSpecies(Long id, Long versionId) {
+        Long currentUserId = SecurityUtils.requireCurrentUser().userId();
+        SpeciesVersionSnapshot targetSnapshot = entityVersionService.readSnapshot(
+                EntityVersionService.ENTITY_TYPE_SPECIES,
+                id,
+                versionId,
+                SpeciesVersionSnapshot.class
+        );
+        Species existing = speciesMapper.findById(id);
+        SpeciesVersionSnapshot beforeSnapshot = existing == null ? null : SpeciesVersionSnapshot.fromDetail(getSpecies(id));
+
+        Long taxonId = resolveSpeciesTaxonId(targetSnapshot.toSaveRequest());
+        Species species = toEntity(targetSnapshot.toSaveRequest(), taxonId);
+        species.setId(id);
+        if (existing == null) {
+            speciesMapper.insertWithId(species);
+        } else {
+            speciesMapper.update(species);
+        }
+
+        SpeciesDetailView detailView = getSpecies(id);
+        SpeciesVersionSnapshot afterSnapshot = SpeciesVersionSnapshot.fromDetail(detailView);
+        entityVersionService.recordVersion(
+                EntityVersionService.ENTITY_TYPE_SPECIES,
+                id,
+                "ROLLBACK",
+                afterSnapshot,
+                buildSpeciesChanges(beforeSnapshot, afterSnapshot),
+                currentUserId,
+                versionId
+        );
+        assistantQueryCache.invalidateAll();
+        auditService.record(currentUserId, "SPECIES", "ROLLBACK", "SPECIES", id, true,
+                "{\"versionId\":" + versionId + "}");
+        return detailView;
     }
 
     private SpeciesRow requireSpeciesRow(Long id) {
@@ -378,6 +465,52 @@ public class SpeciesService {
 
     private String escapeJson(String value) {
         return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private List<VersionFieldChangeView> buildSpeciesChanges(
+            SpeciesVersionSnapshot before,
+            SpeciesVersionSnapshot after
+    ) {
+        List<VersionFieldChangeView> changes = new ArrayList<>();
+        addChange(changes, "chineseName", "中文名", before == null ? null : before.chineseName(), after == null ? null : after.chineseName());
+        addChange(changes, "scientificName", "学名", before == null ? null : before.scientificName(), after == null ? null : after.scientificName());
+        addChange(changes, "phylumName", "门", before == null ? null : before.phylumName(), after == null ? null : after.phylumName());
+        addChange(changes, "className", "纲", before == null ? null : before.className(), after == null ? null : after.className());
+        addChange(changes, "orderName", "目", before == null ? null : before.orderName(), after == null ? null : after.orderName());
+        addChange(changes, "familyName", "科", before == null ? null : before.familyName(), after == null ? null : after.familyName());
+        addChange(changes, "genusName", "属", before == null ? null : before.genusName(), after == null ? null : after.genusName());
+        addChange(changes, "protectionLevel", "保护等级", before == null ? null : before.protectionLevel(), after == null ? null : after.protectionLevel());
+        addChange(changes, "iucnStatus", "濒危状态", before == null ? null : before.iucnStatus(), after == null ? null : after.iucnStatus());
+        addChange(changes, "description", "物种简介", before == null ? null : before.description(), after == null ? null : after.description());
+        addChange(changes, "morphology", "形态特征", before == null ? null : before.morphology(), after == null ? null : after.morphology());
+        addChange(changes, "habit", "生活习性", before == null ? null : before.habit(), after == null ? null : after.habit());
+        addChange(changes, "habitat", "栖息环境", before == null ? null : before.habitat(), after == null ? null : after.habitat());
+        addChange(changes, "distribution", "分布区域", before == null ? null : before.distribution(), after == null ? null : after.distribution());
+        addChange(changes, "distributionLat", "分布纬度", decimalToString(before == null ? null : before.distributionLat()), decimalToString(after == null ? null : after.distributionLat()));
+        addChange(changes, "distributionLng", "分布经度", decimalToString(before == null ? null : before.distributionLng()), decimalToString(after == null ? null : after.distributionLng()));
+        addChange(changes, "geoRangeText", "地理范围", before == null ? null : before.geoRangeText(), after == null ? null : after.geoRangeText());
+        addChange(changes, "videoUrl", "视频链接", before == null ? null : before.videoUrl(), after == null ? null : after.videoUrl());
+        addChange(changes, "referenceText", "参考文献", before == null ? null : before.referenceText(), after == null ? null : after.referenceText());
+        addChange(changes, "status", "档案状态", formatStatus(before == null ? null : before.status()), formatStatus(after == null ? null : after.status()));
+        return changes;
+    }
+
+    private void addChange(List<VersionFieldChangeView> changes, String fieldKey, String fieldLabel, String oldValue, String newValue) {
+        if (Objects.equals(oldValue, newValue)) {
+            return;
+        }
+        changes.add(new VersionFieldChangeView(fieldKey, fieldLabel, oldValue, newValue));
+    }
+
+    private String decimalToString(BigDecimal value) {
+        return value == null ? null : value.stripTrailingZeros().toPlainString();
+    }
+
+    private String formatStatus(Integer value) {
+        if (value == null) {
+            return null;
+        }
+        return value == 1 ? "启用" : "归档";
     }
 
     private record TaxonomyLineage(

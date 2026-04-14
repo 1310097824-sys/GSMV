@@ -5,8 +5,10 @@ import com.gsmv.common.PageResponse;
 import com.gsmv.observation.dto.ObservationDetailView;
 import com.gsmv.observation.dto.ObservationSaveRequest;
 import com.gsmv.observation.dto.ObservationView;
+import com.gsmv.versioning.dto.EntityVersionView;
 import jakarta.validation.Valid;
 import java.time.LocalDateTime;
+import java.util.List;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -48,6 +50,12 @@ public class ObservationController {
         return ApiResponse.success(observationService.getDetail(id));
     }
 
+    @GetMapping("/{id}/versions")
+    @PreAuthorize("hasAuthority('OBS_READ')")
+    public ApiResponse<List<EntityVersionView>> listVersions(@PathVariable Long id) {
+        return ApiResponse.success(observationService.listVersions(id));
+    }
+
     @PostMapping
     @PreAuthorize("hasAuthority('OBS_WRITE')")
     public ApiResponse<ObservationDetailView> create(@Valid @RequestBody ObservationSaveRequest request) {
@@ -58,6 +66,12 @@ public class ObservationController {
     @PreAuthorize("hasAuthority('OBS_WRITE')")
     public ApiResponse<ObservationDetailView> update(@PathVariable Long id, @Valid @RequestBody ObservationSaveRequest request) {
         return ApiResponse.success(observationService.update(id, request));
+    }
+
+    @PostMapping("/{id}/versions/{versionId}/rollback")
+    @PreAuthorize("hasAuthority('OBS_WRITE')")
+    public ApiResponse<ObservationDetailView> rollback(@PathVariable Long id, @PathVariable Long versionId) {
+        return ApiResponse.success(observationService.rollback(id, versionId));
     }
 
     @DeleteMapping("/{id}")

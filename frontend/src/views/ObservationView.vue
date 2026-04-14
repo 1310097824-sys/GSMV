@@ -242,6 +242,19 @@
           <el-table-column prop="behavior" label="行为" min-width="160" />
           <el-table-column prop="comment" label="说明" min-width="180" />
         </el-table>
+
+        <el-divider>版本历史</el-divider>
+
+        <VersionHistoryPanel
+          title="观测记录版本历史"
+          description="查看每次观测变更记录、字段差异和操作人，并支持一键回滚。"
+          empty-text="当前观测记录还没有版本记录。"
+          :versions="detailVersions"
+          :loading="detailVersionsLoading"
+          :can-rollback="canWrite"
+          :rollbacking-version-id="rollbackingVersionId"
+          @rollback="handleRollbackVersion"
+        />
       </template>
     </el-drawer>
   </div>
@@ -256,11 +269,14 @@ import {
   createObservation,
   deleteObservation,
   fetchObservationDetail,
+  fetchObservationVersions,
   fetchObservations,
+  rollbackObservationVersion,
   updateObservation,
 } from '@/api/observations'
 import { fetchSpecies } from '@/api/species'
 import LeafletPicker from '@/components/LeafletPicker.vue'
+import VersionHistoryPanel from '@/components/VersionHistoryPanel.vue'
 import { DEFAULT_ECOSYSTEM_NAME, ZHANJIANG_OFFSHORE_CENTER } from '@/constants/ecosystem'
 import { useAuthStore } from '@/stores/auth'
 import { listenDataChanged, notifyDataChanged } from '@/utils/dataSync'
@@ -274,6 +290,7 @@ import {
 import type {
   AiObservationAnalysisResponse,
   Ecosystem,
+  EntityVersionView,
   ObservationDetailView,
   ObservationSpeciesInput,
   ObservationView,
@@ -288,6 +305,9 @@ const dialogVisible = ref(false)
 const detailVisible = ref(false)
 const editingId = ref<number | null>(null)
 const detail = ref<ObservationDetailView | null>(null)
+const detailVersions = ref<EntityVersionView[]>([])
+const detailVersionsLoading = ref(false)
+const rollbackingVersionId = ref<number | null>(null)
 const rows = ref<ObservationView[]>([])
 const ecosystemOptions = ref<Ecosystem[]>([])
 const speciesOptions = ref<SpeciesView[]>([])
@@ -557,6 +577,7 @@ async function submit() {
       ? await updateObservation(editingId.value, payload)
       : await createObservation(payload)
     detail.value = saved
+    detailVersions.value = []
     notifyDataChanged('observation')
     dialogVisible.value = false
     ElMessage.success(editingId.value ? '观测记录已更新' : '观测记录已创建')
@@ -570,10 +591,59 @@ async function submit() {
 
 async function showDetail(id: number) {
   try {
-    detail.value = await fetchObservationDetail(id)
+    const [detailData, versionsData] = await Promise.all([
+      fetchObservationDetail(id),
+      fetchObservationVersions(id),
+    ])
+    detail.value = detailData
+    detailVersions.value = versionsData
     detailVisible.value = true
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '详情加载失败')
+  }
+}
+
+async function refreshCurrentDetail() {
+  if (!detailVisible.value || !detail.value) {
+    return
+  }
+
+  const id = detail.value.id
+  const [detailData, versionsData] = await Promise.all([
+    fetchObservationDetail(id),
+    fetchObservationVersions(id),
+  ])
+  detail.value = detailData
+  detailVersions.value = versionsData
+}
+
+async function handleRollbackVersion(version: EntityVersionView) {
+  if (!detail.value) {
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `回滚后会将当前观测记录恢复到 V${version.versionNo}，并生成一条新的回滚记录。确认继续吗？`,
+      '回滚观测记录',
+      {
+        type: 'warning',
+        confirmButtonText: '确认回滚',
+        cancelButtonText: '取消',
+      },
+    )
+    rollbackingVersionId.value = version.id
+    detail.value = await rollbackObservationVersion(detail.value.id, version.id)
+    notifyDataChanged('observation')
+    ElMessage.success(`已回滚到 V${version.versionNo}`)
+    await Promise.all([loadData(), refreshCurrentDetail()])
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') {
+      return
+    }
+    ElMessage.error(error instanceof Error ? error.message : '观测记录回滚失败')
+  } finally {
+    rollbackingVersionId.value = null
   }
 }
 
@@ -592,6 +662,7 @@ async function removeObservation(id: number) {
     notifyDataChanged('observation')
     if (detail.value?.id === id) {
       detail.value = null
+      detailVersions.value = []
       detailVisible.value = false
     }
     ElMessage.success('观测记录已删除')
@@ -606,11 +677,13 @@ async function removeObservation(id: number) {
 
 function handleFocus() {
   void loadData()
+  void refreshCurrentDetail()
 }
 
 function handleVisibilityChange() {
   if (!document.hidden) {
     void loadData()
+    void refreshCurrentDetail()
   }
 }
 
@@ -618,6 +691,7 @@ onMounted(async () => {
   stopDataSync = listenDataChanged((detailData) => {
     if (detailData.type === 'observation') {
       void loadData()
+      void refreshCurrentDetail()
     }
     if (detailData.type === 'ecosystem' || detailData.type === 'species') {
       void loadOptions()

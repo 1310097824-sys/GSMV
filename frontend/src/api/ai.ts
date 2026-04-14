@@ -11,6 +11,8 @@ import type {
   ObservationEnvironment,
 } from '@/types/gsmv'
 
+const AI_REQUEST_TIMEOUT = 90000
+
 export async function identifySpeciesByImage(file: File) {
   const formData = new FormData()
   formData.append('file', file)
@@ -19,6 +21,7 @@ export async function identifySpeciesByImage(file: File) {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
+      timeout: AI_REQUEST_TIMEOUT,
     }),
   )
 }
@@ -33,14 +36,16 @@ export function autocompleteSpeciesProfile(payload: {
   distribution?: string
   geoRangeText?: string
 }) {
-  return unwrap<AiSpeciesAutocompleteResponse>(http.post('/v1/ai/species/autocomplete', payload))
+  return unwrap<AiSpeciesAutocompleteResponse>(
+    http.post('/v1/ai/species/autocomplete', payload, { timeout: AI_REQUEST_TIMEOUT }),
+  )
 }
 
 export function polishSpeciesText(payload: {
   fieldName: string
   text: string
 }) {
-  return unwrap<AiPolishTextResponse>(http.post('/v1/ai/species/polish', payload))
+  return unwrap<AiPolishTextResponse>(http.post('/v1/ai/species/polish', payload, { timeout: AI_REQUEST_TIMEOUT }))
 }
 
 export function translateSpeciesProfile(payload: {
@@ -54,7 +59,9 @@ export function translateSpeciesProfile(payload: {
   geoRangeText?: string
   targetLanguage: string
 }) {
-  return unwrap<AiTranslateSpeciesResponse>(http.post('/v1/ai/species/translate', payload))
+  return unwrap<AiTranslateSpeciesResponse>(
+    http.post('/v1/ai/species/translate', payload, { timeout: AI_REQUEST_TIMEOUT }),
+  )
 }
 
 export function analyzeObservationWithAi(payload: {
@@ -68,7 +75,9 @@ export function analyzeObservationWithAi(payload: {
   environment: ObservationEnvironment
   speciesItems: AiObservationSpeciesItem[]
 }) {
-  return unwrap<AiObservationAnalysisResponse>(http.post('/v1/ai/observations/analyze', payload))
+  return unwrap<AiObservationAnalysisResponse>(
+    http.post('/v1/ai/observations/analyze', payload, { timeout: AI_REQUEST_TIMEOUT }),
+  )
 }
 
 export function askAiAssistant(payload: {

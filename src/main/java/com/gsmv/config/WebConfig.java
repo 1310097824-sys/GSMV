@@ -31,8 +31,8 @@ public class WebConfig {
     @Bean
     public RestClient.Builder restClientBuilder() {
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-        requestFactory.setConnectTimeout(10000);
-        requestFactory.setReadTimeout(45000);
+        requestFactory.setConnectTimeout(15000);
+        requestFactory.setReadTimeout(90000);
         return RestClient.builder().requestFactory(requestFactory);
     }
 }

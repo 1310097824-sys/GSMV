@@ -168,6 +168,25 @@ export interface ObservationDetailView extends ObservationView {
   speciesItems: ObservationSpeciesView[]
 }
 
+export interface VersionFieldChangeView {
+  fieldKey: string
+  fieldLabel: string
+  oldValue?: string
+  newValue?: string
+}
+
+export interface EntityVersionView {
+  id: number
+  versionNo: number
+  action: string
+  changedBy?: number
+  changedByName?: string
+  rollbackSourceVersionId?: number
+  rollbackSourceVersionNo?: number
+  createdAt: string
+  changes: VersionFieldChangeView[]
+}
+
 export interface AuditLogView {
   id: number
   userId?: number
