@@ -8,6 +8,23 @@
           仪表盘把系统概览、空间分布与近期活动压缩成一张可读的工作首屏。先快速判断当前数据规模和变化焦点，再进入观测记录、统计报表或
           AI 助手继续推进工作。
         </p>
+        <div class="dashboard-hero__summary">
+          <article class="dashboard-hero__summary-card">
+            <span>档案覆盖</span>
+            <strong>{{ summary.totalSpecies }}</strong>
+            <p>当前系统内可直接检索的物种档案总数。</p>
+          </article>
+          <article class="dashboard-hero__summary-card">
+            <span>空间采样</span>
+            <strong>{{ summary.totalEcosystems }}</strong>
+            <p>已纳入管理和比对的生态系统样带数量。</p>
+          </article>
+          <article class="dashboard-hero__summary-card">
+            <span>近期热度</span>
+            <strong>{{ summary.recentObservationCount }}</strong>
+            <p>最近 7 天新增观测记录，可用来判断现场活跃度。</p>
+          </article>
+        </div>
         <div class="page-hero__actions">
           <RouterLink to="/reports">
             <el-button type="primary">查看完整报表</el-button>
@@ -499,10 +516,27 @@ onBeforeUnmount(() => {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03)),
     rgba(5, 24, 57, 0.54);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 28px 56px rgba(2, 14, 38, 0.16);
+  overflow: hidden;
+}
+
+.dashboard-window::after {
+  content: '';
+  position: absolute;
+  right: -52px;
+  bottom: -72px;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(107, 236, 255, 0.16), transparent 72%);
+  pointer-events: none;
 }
 
 .dashboard-window__header {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -525,16 +559,49 @@ onBeforeUnmount(() => {
 }
 
 .dashboard-window__metrics {
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
 .dashboard-window__metric {
+  position: relative;
   padding: 16px;
   border-radius: 22px;
   border: 1px solid rgba(181, 244, 255, 0.14);
-  background: rgba(255, 255, 255, 0.05);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02)),
+    rgba(4, 22, 58, 0.66);
+  overflow: hidden;
+  transition:
+    transform 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.dashboard-window__metric::after,
+.dashboard-window__column::after,
+.dashboard-focus-item::after,
+.dashboard-route-card::after,
+.dashboard-hero__summary-card::after {
+  content: '';
+  position: absolute;
+  right: -28px;
+  bottom: -34px;
+  width: 108px;
+  height: 108px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(110, 242, 255, 0.13), transparent 72%);
+  pointer-events: none;
+}
+
+.dashboard-window__metric:hover,
+.dashboard-focus-item:hover {
+  transform: translateY(-2px);
+  border-color: rgba(184, 246, 255, 0.24);
+  box-shadow: 0 18px 34px rgba(2, 15, 44, 0.16);
 }
 
 .dashboard-window__metric span,
@@ -559,6 +626,8 @@ onBeforeUnmount(() => {
 }
 
 .dashboard-window__story {
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
@@ -566,10 +635,14 @@ onBeforeUnmount(() => {
 }
 
 .dashboard-window__column {
+  position: relative;
   padding: 16px;
   border-radius: 22px;
-  background: rgba(255, 255, 255, 0.04);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02)),
+    rgba(3, 19, 52, 0.64);
   border: 1px solid rgba(181, 244, 255, 0.12);
+  overflow: hidden;
 }
 
 .dashboard-window__column ul {
@@ -597,6 +670,52 @@ onBeforeUnmount(() => {
   gap: 18px;
 }
 
+.dashboard-hero__summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.dashboard-hero__summary-card {
+  position: relative;
+  min-height: 132px;
+  padding: 18px 18px 20px;
+  border-radius: 22px;
+  border: 1px solid rgba(181, 244, 255, 0.14);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03)),
+    rgba(4, 24, 60, 0.6);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 16px 30px rgba(2, 14, 38, 0.1);
+  overflow: hidden;
+}
+
+.dashboard-hero__summary-card span {
+  color: rgba(211, 239, 248, 0.76);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.dashboard-hero__summary-card strong {
+  display: block;
+  margin: 14px 0 8px;
+  color: #f4fdff;
+  font-size: 30px;
+  line-height: 1.02;
+  letter-spacing: 0;
+}
+
+.dashboard-hero__summary-card p {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  color: rgba(225, 246, 255, 0.78);
+  line-height: 1.68;
+}
+
 .dashboard-story-card :deep(.el-card__body) {
   display: flex;
   flex-direction: column;
@@ -611,12 +730,14 @@ onBeforeUnmount(() => {
 
 .dashboard-focus-item,
 .dashboard-route-card {
+  position: relative;
   padding: 18px 20px;
   border-radius: 22px;
   border: 1px solid rgba(176, 244, 255, 0.14);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03)),
     rgba(6, 25, 60, 0.54);
+  overflow: hidden;
 }
 
 .dashboard-focus-item span,
@@ -659,7 +780,9 @@ onBeforeUnmount(() => {
 .dashboard-route-card:hover {
   transform: translateY(-2px);
   border-color: rgba(189, 247, 255, 0.24);
-  box-shadow: 0 18px 36px rgba(2, 15, 44, 0.18);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 18px 36px rgba(2, 15, 44, 0.18);
 }
 
 .dashboard-route-card em {
@@ -708,6 +831,10 @@ onBeforeUnmount(() => {
   .dashboard-hero,
   .dashboard-story-grid,
   .dashboard-route-list {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-hero__summary {
     grid-template-columns: 1fr;
   }
 }

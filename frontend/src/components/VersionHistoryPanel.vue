@@ -126,7 +126,9 @@ function displayValue(value?: string) {
   padding: 18px;
   border-radius: 20px;
   border: 1px solid rgba(177, 234, 247, 0.12);
-  background: rgba(7, 49, 106, 0.46);
+  background:
+    radial-gradient(circle at 14% 0%, rgba(116, 233, 255, 0.1), transparent 32%),
+    linear-gradient(180deg, rgba(8, 35, 82, 0.78), rgba(5, 21, 56, 0.84));
 }
 
 .version-item--latest {
@@ -163,7 +165,9 @@ function displayValue(value?: string) {
 .version-change {
   padding: 12px 14px;
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.04);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02)),
+    rgba(3, 19, 50, 0.66);
   border: 1px solid rgba(177, 234, 247, 0.08);
 }
 

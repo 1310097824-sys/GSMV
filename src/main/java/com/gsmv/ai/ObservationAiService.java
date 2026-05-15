@@ -1,8 +1,12 @@
 package com.gsmv.ai;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gsmv.ai.dto.ObservationAiDtos;
 import com.gsmv.audit.service.AuditService;
+import com.gsmv.observation.ObservationService;
+import com.gsmv.observation.dto.ObservationDetailView;
+import com.gsmv.observation.dto.ObservationSpeciesView;
 import com.gsmv.security.SecurityUtils;
 import com.gsmv.species.SpeciesService;
 import com.gsmv.species.dto.SpeciesDetailView;
@@ -21,12 +25,22 @@ public class ObservationAiService {
 
     private final AiModelGateway aiModelGateway;
     private final SpeciesService speciesService;
+    private final ObservationService observationService;
     private final AuditService auditService;
+    private final ObjectMapper objectMapper;
 
-    public ObservationAiService(AiModelGateway aiModelGateway, SpeciesService speciesService, AuditService auditService) {
+    public ObservationAiService(
+            AiModelGateway aiModelGateway,
+            SpeciesService speciesService,
+            ObservationService observationService,
+            AuditService auditService,
+            ObjectMapper objectMapper
+    ) {
         this.aiModelGateway = aiModelGateway;
         this.speciesService = speciesService;
+        this.observationService = observationService;
         this.auditService = auditService;
+        this.objectMapper = objectMapper;
     }
 
     public ObservationAiDtos.AnalyzeObservationResponse analyze(ObservationAiDtos.AnalyzeObservationRequest request) {
@@ -84,6 +98,98 @@ public class ObservationAiService {
                 reviewNotes,
                 anomalies,
                 !anomalies.isEmpty() || !reviewNotes.isEmpty()
+        );
+    }
+
+    public ObservationAiDtos.QualityCheckResponse qualityCheck(Long observationId) {
+        ObservationDetailView detail = observationService.getDetail(observationId);
+        ObservationAiDtos.AnalyzeObservationRequest request = toAnalyzeRequest(detail);
+        List<ObservationAiDtos.ObservationAnomaly> anomalies = buildAnomalies(request);
+        List<ObservationAiDtos.QualityIssue> issues = new ArrayList<>();
+        List<String> strengths = new ArrayList<>();
+        int score = 100;
+
+        if (!StringUtils.hasText(detail.locationName())) {
+            score -= 6;
+            issues.add(new ObservationAiDtos.QualityIssue(
+                    "LOW",
+                    "地点说明不完整",
+                    "观测记录只有经纬度，缺少可读的地点说明。",
+                    "补充海域、站位、样线或近岸参照点，方便后续复核。"
+            ));
+        } else {
+            strengths.add("地点说明和坐标信息完整。");
+        }
+
+        if (detail.speciesItems() == null || detail.speciesItems().isEmpty()) {
+            score -= 22;
+            issues.add(new ObservationAiDtos.QualityIssue(
+                    "HIGH",
+                    "未关联观测物种",
+                    "这条观测没有关联任何物种，难以支撑物种分布或生态系统统计。",
+                    "至少关联一个现场确认或待确认的物种，并填写估算数量或行为。"
+            ));
+        } else {
+            strengths.add("已关联 " + detail.speciesItems().size() + " 个物种，可进入分布和生态统计。");
+        }
+
+        ObservationAiDtos.EnvironmentSnapshot environment = request.environment();
+        if (environment == null || isEnvironmentEmpty(environment)) {
+            score -= 16;
+            issues.add(new ObservationAiDtos.QualityIssue(
+                    "MEDIUM",
+                    "环境参数缺失",
+                    "水温、盐度、pH、溶解氧等环境参数缺少记录。",
+                    "补充关键环境参数后，AI 异常检测和生态系统分析会更可靠。"
+            ));
+        } else {
+            strengths.add("已记录环境参数，可用于生态条件复核。");
+            score -= addEnvironmentIssues(environment, issues);
+        }
+
+        if (!StringUtils.hasText(detail.note())) {
+            score -= 8;
+            issues.add(new ObservationAiDtos.QualityIssue(
+                    "LOW",
+                    "备注偏少",
+                    "缺少现场背景、采样方式或照片依据等说明。",
+                    "补充天气、样线、拍摄情况或人工确认依据。"
+            ));
+        } else {
+            strengths.add("备注中已有现场补充信息。");
+        }
+
+        for (ObservationAiDtos.ObservationAnomaly anomaly : anomalies) {
+            score -= "HIGH".equalsIgnoreCase(anomaly.severity()) ? 18 : 10;
+            issues.add(new ObservationAiDtos.QualityIssue(
+                    anomaly.severity(),
+                    "物种分布冲突",
+                    anomaly.message(),
+                    anomaly.suggestion()
+            ));
+        }
+
+        score = Math.max(0, Math.min(100, score));
+        String grade = score >= 85 ? "HIGH" : score >= 70 ? "MEDIUM" : "LOW";
+        if (strengths.isEmpty()) {
+            strengths.add("基础观测记录已保存，可继续补充证据提高质量。");
+        }
+        String summary = switch (grade) {
+            case "HIGH" -> "这条观测记录信息较完整，适合直接进入统计分析和地图展示。";
+            case "MEDIUM" -> "这条观测记录基本可用，但仍建议补充关键字段或复核提示项。";
+            default -> "这条观测记录存在明显缺口，建议先补充信息或发起人工核验。";
+        };
+
+        auditService.record(SecurityUtils.requireCurrentUser().userId(), "AI", "QUALITY_CHECK_OBSERVATION", "OBSERVATION", observationId, true,
+                "{\"score\":" + score + "}");
+        return new ObservationAiDtos.QualityCheckResponse(
+                observationId,
+                score,
+                grade,
+                summary,
+                strengths,
+                issues,
+                score < 70 || issues.stream().anyMatch(issue -> "HIGH".equalsIgnoreCase(issue.severity()))
         );
     }
 
@@ -178,6 +284,85 @@ public class ObservationAiService {
             }
         }
         return anomalies;
+    }
+
+    private ObservationAiDtos.AnalyzeObservationRequest toAnalyzeRequest(ObservationDetailView detail) {
+        return new ObservationAiDtos.AnalyzeObservationRequest(
+                detail.ecosystemId(),
+                detail.ecosystemName(),
+                detail.observedAt(),
+                detail.locationLat(),
+                detail.locationLng(),
+                detail.locationName(),
+                detail.note(),
+                parseEnvironment(detail.envJson()),
+                detail.speciesItems() == null ? List.of() : detail.speciesItems().stream().map(this::toAiSpeciesItem).toList()
+        );
+    }
+
+    private ObservationAiDtos.SpeciesObservationItem toAiSpeciesItem(ObservationSpeciesView item) {
+        return new ObservationAiDtos.SpeciesObservationItem(
+                item.speciesId(),
+                item.scientificName(),
+                item.chineseName(),
+                item.countEstimated(),
+                item.behavior(),
+                item.comment()
+        );
+    }
+
+    private ObservationAiDtos.EnvironmentSnapshot parseEnvironment(String envJson) {
+        if (!StringUtils.hasText(envJson)) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(envJson, ObservationAiDtos.EnvironmentSnapshot.class);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private boolean isEnvironmentEmpty(ObservationAiDtos.EnvironmentSnapshot environment) {
+        return environment.waterTemperature() == null
+                && environment.salinity() == null
+                && environment.ph() == null
+                && environment.dissolvedOxygen() == null
+                && environment.transparency() == null
+                && environment.depthMeters() == null
+                && !StringUtils.hasText(environment.weather())
+                && !StringUtils.hasText(environment.seaState());
+    }
+
+    private int addEnvironmentIssues(ObservationAiDtos.EnvironmentSnapshot environment, List<ObservationAiDtos.QualityIssue> issues) {
+        int penalty = 0;
+        if (environment.waterTemperature() == null || environment.salinity() == null) {
+            penalty += 8;
+            issues.add(new ObservationAiDtos.QualityIssue(
+                    "MEDIUM",
+                    "核心水文参数不完整",
+                    "水温和盐度是判断海洋观测环境的重要基础字段。",
+                    "优先补齐水温和盐度，再补充 pH、溶解氧、透明度等参数。"
+            ));
+        }
+        if (environment.ph() != null && (compare(environment.ph(), 6.5) < 0 || compare(environment.ph(), 9.0) > 0)) {
+            penalty += 10;
+            issues.add(new ObservationAiDtos.QualityIssue(
+                    "HIGH",
+                    "pH 数值异常",
+                    "当前 pH 超出常见海水观测范围。",
+                    "请核对仪器校准、单位和录入值。"
+            ));
+        }
+        if (environment.dissolvedOxygen() != null && compare(environment.dissolvedOxygen(), 3) < 0) {
+            penalty += 10;
+            issues.add(new ObservationAiDtos.QualityIssue(
+                    "HIGH",
+                    "溶解氧偏低",
+                    "溶解氧低于常规阈值，可能代表局部低氧环境或录入异常。",
+                    "建议复核采样时间、深度和现场仪器读数。"
+            ));
+        }
+        return penalty;
     }
 
     private String environmentSummary(ObservationAiDtos.EnvironmentSnapshot environment) {

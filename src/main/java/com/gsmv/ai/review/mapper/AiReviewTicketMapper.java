@@ -66,6 +66,36 @@ public interface AiReviewTicketMapper {
             @Param("reviewedAt") LocalDateTime reviewedAt
     );
 
+    @Update("""
+            UPDATE ai_review_ticket
+            SET status = 'REJECTED',
+                resolution_code = 'REJECTED',
+                reviewer_user_id = #{reviewerUserId},
+                review_note = #{reviewNote},
+                reviewed_at = #{reviewedAt},
+                updated_at = CURRENT_TIMESTAMP(3)
+            WHERE id = #{id}
+            """)
+    void reject(
+            @Param("id") Long id,
+            @Param("reviewerUserId") Long reviewerUserId,
+            @Param("reviewNote") String reviewNote,
+            @Param("reviewedAt") LocalDateTime reviewedAt
+    );
+
+    @Update("""
+            UPDATE ai_review_ticket
+            SET status = 'PENDING',
+                resolution_code = NULL,
+                reviewer_user_id = NULL,
+                review_note = NULL,
+                reviewed_at = NULL,
+                submit_note = #{submitNote},
+                updated_at = CURRENT_TIMESTAMP(3)
+            WHERE id = #{id}
+            """)
+    void resubmit(@Param("id") Long id, @Param("submitNote") String submitNote);
+
     @Select("""
             <script>
             SELECT
@@ -95,7 +125,7 @@ public interface AiReviewTicketMapper {
                 AND t.submitted_by = #{submittedBy}
               </if>
             </where>
-            ORDER BY FIELD(t.status, 'PENDING', 'IN_REVIEW', 'RESOLVED'), t.created_at DESC
+            ORDER BY FIELD(t.status, 'PENDING', 'IN_REVIEW', 'REJECTED', 'RESOLVED'), t.created_at DESC
             LIMIT #{limit} OFFSET #{offset}
             </script>
             """)

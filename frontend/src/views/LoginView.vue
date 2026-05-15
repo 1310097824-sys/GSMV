@@ -62,7 +62,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive } from 'vue'
+import { onMounted, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
@@ -74,6 +74,13 @@ const authStore = useAuthStore()
 const form = reactive({
   username: '',
   password: '',
+})
+
+onMounted(() => {
+  if (route.query.fresh === '1') {
+    authStore.logout()
+    void router.replace('/login')
+  }
 })
 
 async function handleSubmit() {

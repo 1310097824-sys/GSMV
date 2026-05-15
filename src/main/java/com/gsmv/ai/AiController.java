@@ -6,6 +6,7 @@ import com.gsmv.ai.dto.SpeciesAiDtos;
 import com.gsmv.common.ApiResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -68,6 +69,12 @@ public class AiController {
             @Valid @RequestBody ObservationAiDtos.AnalyzeObservationRequest request
     ) {
         return ApiResponse.success(observationAiService.analyze(request));
+    }
+
+    @PostMapping("/observations/{id}/quality-check")
+    @PreAuthorize("hasAuthority('OBS_READ')")
+    public ApiResponse<ObservationAiDtos.QualityCheckResponse> qualityCheckObservation(@PathVariable Long id) {
+        return ApiResponse.success(observationAiService.qualityCheck(id));
     }
 
     @PostMapping("/assistant/chat")

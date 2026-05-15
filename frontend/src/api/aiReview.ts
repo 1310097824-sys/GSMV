@@ -55,6 +55,18 @@ export function resolveAiReviewTicket(id: number, payload: {
   return unwrap<AiReviewTicketDetailView>(http.post(`/v1/ai/review-tickets/${id}/resolve`, payload))
 }
 
+export function rejectAiReviewTicket(id: number, payload: { reviewNote: string }) {
+  return unwrap<AiReviewTicketDetailView>(http.post(`/v1/ai/review-tickets/${id}/reject`, payload))
+}
+
+export function resubmitAiReviewTicket(id: number, payload: { submitNote?: string }) {
+  return unwrap<AiReviewTicketDetailView>(http.post(`/v1/ai/review-tickets/${id}/resubmit`, payload))
+}
+
+export function linkAiReviewTicketSpecies(id: number, payload: { finalSpeciesId: number; reviewNote: string }) {
+  return unwrap<AiReviewTicketDetailView>(http.post(`/v1/ai/review-tickets/${id}/link-species`, payload))
+}
+
 export async function fetchAiReviewImageBlob(mediaId: number) {
   const response = await http.get(`/v1/ai/review-tickets/images/${mediaId}`, {
     responseType: 'blob',

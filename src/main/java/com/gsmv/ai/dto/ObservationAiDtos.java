@@ -64,4 +64,23 @@ public final class ObservationAiDtos {
             boolean needsReview
     ) {
     }
+
+    public record QualityIssue(
+            String severity,
+            String title,
+            String message,
+            String suggestion
+    ) {
+    }
+
+    public record QualityCheckResponse(
+            Long observationId,
+            int score,
+            String grade,
+            String summary,
+            List<String> strengths,
+            List<QualityIssue> issues,
+            boolean needsReview
+    ) {
+    }
 }

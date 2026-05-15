@@ -24,6 +24,7 @@ const routes = [
       { path: 'observations', component: () => import('@/views/ObservationView.vue'), meta: { authority: 'OBS_READ' } },
       { path: 'assistant', component: () => import('@/views/AiAssistantView.vue') },
       { path: 'ai-reviews', component: () => import('@/views/AiReviewTicketsView.vue'), meta: { authority: 'AI_REVIEW_READ' } },
+      { path: 'ai-reports', component: () => import('@/views/AiReportsView.vue'), meta: { authority: 'REPORT_READ' } },
       { path: 'reports', component: () => import('@/views/ReportsView.vue'), meta: { authority: 'REPORT_READ' } },
       { path: 'audits', component: () => import('@/views/AuditView.vue'), meta: { authority: 'AUDIT_READ' } },
       { path: 'users', component: () => import('@/views/UsersView.vue'), meta: { authority: 'USER_ADMIN' } },
@@ -40,6 +41,9 @@ const router = createRouter({
 router.beforeEach((to) => {
   const token = localStorage.getItem(ACCESS_TOKEN_KEY)
   if (to.meta.public) {
+    if (to.path === '/login' && to.query.fresh === '1') {
+      return true
+    }
     if ((to.path === '/login' || to.path === '/register') && token) {
       return '/dashboard'
     }

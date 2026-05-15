@@ -74,6 +74,33 @@ public class AiReviewTicketController {
         return ApiResponse.success(ticketService.resolveTicket(id, request));
     }
 
+    @PostMapping("/{id}/reject")
+    @PreAuthorize("hasAuthority('AI_REVIEW_WRITE')")
+    public ApiResponse<AiReviewTicketDtos.ReviewTicketDetailView> rejectTicket(
+            @PathVariable Long id,
+            @RequestBody @Valid AiReviewTicketDtos.RejectReviewTicketRequest request
+    ) {
+        return ApiResponse.success(ticketService.rejectTicket(id, request));
+    }
+
+    @PostMapping("/{id}/resubmit")
+    @PreAuthorize("isAuthenticated()")
+    public ApiResponse<AiReviewTicketDtos.ReviewTicketDetailView> resubmitTicket(
+            @PathVariable Long id,
+            @RequestBody AiReviewTicketDtos.ResubmitReviewTicketRequest request
+    ) {
+        return ApiResponse.success(ticketService.resubmitTicket(id, request));
+    }
+
+    @PostMapping("/{id}/link-species")
+    @PreAuthorize("hasAuthority('AI_REVIEW_WRITE')")
+    public ApiResponse<AiReviewTicketDtos.ReviewTicketDetailView> linkSpecies(
+            @PathVariable Long id,
+            @RequestBody @Valid AiReviewTicketDtos.LinkSpeciesRequest request
+    ) {
+        return ApiResponse.success(ticketService.linkSpecies(id, request));
+    }
+
     @GetMapping("/images/{mediaId}")
     public ResponseEntity<byte[]> image(@PathVariable Long mediaId) {
         MediaFile mediaFile = ticketService.getReviewImage(mediaId);

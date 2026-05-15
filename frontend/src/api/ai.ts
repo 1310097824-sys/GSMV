@@ -4,6 +4,7 @@ import type {
   AiAssistantMessage,
   AiIdentifyImageResponse,
   AiObservationAnalysisResponse,
+  AiObservationQualityResponse,
   AiObservationSpeciesItem,
   AiPolishTextResponse,
   AiSpeciesAutocompleteResponse,
@@ -77,6 +78,12 @@ export function analyzeObservationWithAi(payload: {
 }) {
   return unwrap<AiObservationAnalysisResponse>(
     http.post('/v1/ai/observations/analyze', payload, { timeout: AI_REQUEST_TIMEOUT }),
+  )
+}
+
+export function qualityCheckObservationWithAi(id: number) {
+  return unwrap<AiObservationQualityResponse>(
+    http.post(`/v1/ai/observations/${id}/quality-check`, undefined, { timeout: AI_REQUEST_TIMEOUT }),
   )
 }
 

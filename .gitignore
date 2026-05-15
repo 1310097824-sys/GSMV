@@ -21,6 +21,13 @@ target/
 frontend/node_modules/
 frontend/dist/
 frontend/runtime/
+.env
+.env.*
+!.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+.gsmv-runtime/
 uploads/**
 !uploads/.gitkeep
 

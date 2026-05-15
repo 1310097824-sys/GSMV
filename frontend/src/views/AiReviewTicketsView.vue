@@ -19,6 +19,7 @@
         <el-select v-model="query.status" placeholder="工单状态" clearable style="width: 180px">
           <el-option label="待处理" value="PENDING" />
           <el-option label="复核中" value="IN_REVIEW" />
+          <el-option label="已驳回" value="REJECTED" />
           <el-option label="已完成" value="RESOLVED" />
         </el-select>
         <el-button type="primary" @click="handleSearch">查询</el-button>
@@ -64,8 +65,16 @@
           <template #default="{ row }">
             <el-space>
               <el-button link type="primary" @click="openDetail(row.id)">详情</el-button>
-              <el-button v-if="canWrite && row.status !== 'RESOLVED'" link type="success" @click="startReview(row.id)">
+              <el-button
+                v-if="canWrite && row.status !== 'RESOLVED' && row.status !== 'REJECTED'"
+                link
+                type="success"
+                @click="startReview(row.id)"
+              >
                 {{ row.status === 'PENDING' ? '开始复核' : '继续复核' }}
+              </el-button>
+              <el-button v-if="row.status === 'REJECTED'" link type="warning" @click="resubmitTicket(row.id)">
+                重新提交
               </el-button>
             </el-space>
           </template>
@@ -152,15 +161,27 @@
             </div>
           </div>
 
-          <div v-if="detail.status === 'RESOLVED'" class="review-result">
-            <h3>最终结论</h3>
-            <el-tag type="success" effect="dark">{{ resolutionLabel(detail.resolutionCode) }}</el-tag>
+          <div v-if="detail.status === 'RESOLVED' || detail.status === 'REJECTED'" class="review-result">
+            <h3>{{ detail.status === 'REJECTED' ? '驳回结论' : '最终结论' }}</h3>
+            <el-tag :type="detail.status === 'REJECTED' ? 'danger' : 'success'" effect="dark">
+              {{ resolutionLabel(detail.resolutionCode) }}
+            </el-tag>
             <p>{{ detail.finalChineseName || detail.finalScientificName || '未绑定最终物种名称' }}</p>
             <span>{{ detail.finalScientificName || '-' }}</span>
             <div class="review-result__note">{{ detail.reviewNote || '暂无复核说明' }}</div>
           </div>
 
-          <div v-if="canWrite && detail.status !== 'RESOLVED'" class="review-detail__section">
+          <div v-if="detail.status === 'REJECTED'" class="review-detail__section">
+            <div class="review-form__header">
+              <h3>重新提交复核</h3>
+              <el-button type="warning" plain :loading="resubmitting" @click="resubmitTicket(detail.id)">
+                重新提交工单
+              </el-button>
+            </div>
+            <p class="review-detail__hint">重新提交后，工单会回到待处理队列，保留原图、候选列表和提交依据。</p>
+          </div>
+
+          <div v-if="canWrite && detail.status !== 'RESOLVED' && detail.status !== 'REJECTED'" class="review-detail__section">
             <div class="review-form__header">
               <h3>提交复核结论</h3>
               <el-button plain type="success" :loading="starting" @click="startReview(detail.id)">
@@ -218,6 +239,16 @@
               </el-form-item>
 
               <div class="review-form__actions">
+                <el-button
+                  v-if="resolveForm.finalSpeciesId"
+                  type="success"
+                  plain
+                  :loading="linking"
+                  @click="linkSelectedSpecies"
+                >
+                  一键关联已有档案
+                </el-button>
+                <el-button type="danger" plain :loading="rejecting" @click="rejectTicket">驳回工单</el-button>
                 <el-button type="primary" :loading="resolving" @click="submitResolution">提交复核结论</el-button>
               </div>
             </el-form>
@@ -235,7 +266,10 @@ import {
   fetchAiReviewImageBlob,
   fetchAiReviewTicketDetail,
   fetchAiReviewTickets,
+  linkAiReviewTicketSpecies,
+  rejectAiReviewTicket,
   resolveAiReviewTicket,
+  resubmitAiReviewTicket,
   startAiReviewTicket,
 } from '@/api/aiReview'
 import { fetchSpecies } from '@/api/species'
@@ -249,6 +283,9 @@ const loading = ref(false)
 const detailVisible = ref(false)
 const starting = ref(false)
 const resolving = ref(false)
+const rejecting = ref(false)
+const resubmitting = ref(false)
+const linking = ref(false)
 const rows = ref<AiReviewTicketView[]>([])
 const detail = ref<AiReviewTicketDetailView | null>(null)
 const speciesOptions = ref<SpeciesView[]>([])
@@ -281,6 +318,8 @@ function statusLabel(status: string) {
   switch (status) {
     case 'IN_REVIEW':
       return '复核中'
+    case 'REJECTED':
+      return '已驳回'
     case 'RESOLVED':
       return '已完成'
     default:
@@ -292,6 +331,8 @@ function statusTagType(status: string) {
   switch (status) {
     case 'IN_REVIEW':
       return 'warning'
+    case 'REJECTED':
+      return 'danger'
     case 'RESOLVED':
       return 'success'
     default:
@@ -307,6 +348,8 @@ function resolutionLabel(code?: string) {
       return '与候选不匹配'
     case 'UNABLE_TO_CONFIRM':
       return '暂时无法确认'
+    case 'REJECTED':
+      return '已驳回'
     default:
       return '待提交'
   }
@@ -491,6 +534,83 @@ async function submitResolution() {
   }
 }
 
+async function rejectTicket() {
+  if (!detail.value) {
+    return
+  }
+  if (!resolveForm.reviewNote.trim()) {
+    ElMessage.warning('请先填写驳回原因')
+    return
+  }
+
+  rejecting.value = true
+  try {
+    const ticket = await rejectAiReviewTicket(detail.value.id, {
+      reviewNote: resolveForm.reviewNote.trim(),
+    })
+    detail.value = ticket
+    fillResolveForm(ticket)
+    notifyDataChanged('aiReview')
+    await loadData()
+    ElMessage.success('工单已驳回，提交人可重新补充后提交')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '驳回工单失败')
+  } finally {
+    rejecting.value = false
+  }
+}
+
+async function resubmitTicket(id?: number) {
+  const targetId = id || detail.value?.id
+  if (!targetId) {
+    return
+  }
+
+  resubmitting.value = true
+  try {
+    const ticket = await resubmitAiReviewTicket(targetId, {
+      submitNote: detail.value?.submitNote || undefined,
+    })
+    detail.value = ticket
+    fillResolveForm(ticket)
+    notifyDataChanged('aiReview')
+    await loadData()
+    ElMessage.success('工单已重新提交，进入待处理队列')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '重新提交失败')
+  } finally {
+    resubmitting.value = false
+  }
+}
+
+async function linkSelectedSpecies() {
+  if (!detail.value || !resolveForm.finalSpeciesId) {
+    ElMessage.warning('请先选择要关联的物种档案')
+    return
+  }
+  if (!resolveForm.reviewNote.trim()) {
+    ElMessage.warning('请先填写关联依据')
+    return
+  }
+
+  linking.value = true
+  try {
+    const ticket = await linkAiReviewTicketSpecies(detail.value.id, {
+      finalSpeciesId: resolveForm.finalSpeciesId,
+      reviewNote: resolveForm.reviewNote.trim(),
+    })
+    detail.value = ticket
+    fillResolveForm(ticket)
+    notifyDataChanged('aiReview')
+    await loadData()
+    ElMessage.success('已关联已有物种档案并完成复核')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '关联物种档案失败')
+  } finally {
+    linking.value = false
+  }
+}
+
 onMounted(async () => {
   stopDataSync = listenDataChanged((detailChange) => {
     if (detailChange.type === 'aiReview') {
@@ -601,6 +721,12 @@ onBeforeUnmount(() => {
   font-size: 16px;
 }
 
+.review-detail__hint {
+  margin: 0;
+  color: var(--gsmv-muted);
+  line-height: 1.8;
+}
+
 .candidate-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -641,7 +767,9 @@ onBeforeUnmount(() => {
 .review-result__note {
   padding: 12px 14px;
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.05);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02)),
+    rgba(4, 21, 58, 0.7);
   line-height: 1.8;
 }
 

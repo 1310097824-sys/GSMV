@@ -31,6 +31,22 @@ public final class AiReviewTicketDtos {
     ) {
     }
 
+    public record RejectReviewTicketRequest(
+            @NotBlank(message = "请填写驳回说明") String reviewNote
+    ) {
+    }
+
+    public record ResubmitReviewTicketRequest(
+            String submitNote
+    ) {
+    }
+
+    public record LinkSpeciesRequest(
+            Long finalSpeciesId,
+            @NotBlank(message = "请填写关联说明") String reviewNote
+    ) {
+    }
+
     public record ReviewTicketView(
             Long id,
             String sourceType,

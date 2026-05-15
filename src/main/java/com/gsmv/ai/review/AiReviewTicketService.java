@@ -35,6 +35,7 @@ public class AiReviewTicketService {
 
     private static final String TICKET_STATUS_PENDING = "PENDING";
     private static final String TICKET_STATUS_RESOLVED = "RESOLVED";
+    private static final String TICKET_STATUS_REJECTED = "REJECTED";
     private static final String AI_REVIEW_IMAGE_BUSINESS_TYPE = "AI_REVIEW_IMAGE";
 
     private final AiReviewTicketMapper ticketMapper;
@@ -187,6 +188,58 @@ public class AiReviewTicketService {
                 "{\"resolutionCode\":\"" + escapeJson(resolutionCode) + "\"}"
         );
         return getTicket(id);
+    }
+
+    @Transactional
+    public AiReviewTicketDtos.ReviewTicketDetailView rejectTicket(
+            Long id,
+            AiReviewTicketDtos.RejectReviewTicketRequest request
+    ) {
+        CurrentUser currentUser = SecurityUtils.requireCurrentUser();
+        requireWriteAuthority(currentUser);
+        AiReviewTicket ticket = requireTicket(id);
+        if (TICKET_STATUS_RESOLVED.equals(ticket.getStatus())) {
+            throw new BusinessException(ErrorCode.CONFLICT, "已完成的复核工单不能驳回", HttpStatus.CONFLICT);
+        }
+        ticketMapper.reject(id, currentUser.userId(), normalizeRequired(request.reviewNote()), LocalDateTime.now());
+        auditService.record(currentUser.userId(), "AI", "REJECT_REVIEW_TICKET", "AI_REVIEW_TICKET", id, true, "{}");
+        return getTicket(id);
+    }
+
+    @Transactional
+    public AiReviewTicketDtos.ReviewTicketDetailView resubmitTicket(
+            Long id,
+            AiReviewTicketDtos.ResubmitReviewTicketRequest request
+    ) {
+        CurrentUser currentUser = SecurityUtils.requireCurrentUser();
+        AiReviewTicket ticket = requireTicket(id);
+        if (!canManageTickets(currentUser) && !Objects.equals(ticket.getSubmittedBy(), currentUser.userId())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "只能重新提交自己创建的复核工单", HttpStatus.FORBIDDEN);
+        }
+        if (!TICKET_STATUS_REJECTED.equals(ticket.getStatus())) {
+            throw new BusinessException(ErrorCode.CONFLICT, "只有已驳回的复核工单可以重新提交", HttpStatus.CONFLICT);
+        }
+        ticketMapper.resubmit(id, normalizeNullable(request.submitNote()));
+        auditService.record(currentUser.userId(), "AI", "RESUBMIT_REVIEW_TICKET", "AI_REVIEW_TICKET", id, true, "{}");
+        return getTicket(id);
+    }
+
+    @Transactional
+    public AiReviewTicketDtos.ReviewTicketDetailView linkSpecies(
+            Long id,
+            AiReviewTicketDtos.LinkSpeciesRequest request
+    ) {
+        if (request.finalSpeciesId() == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "请选择要关联的已有物种档案", HttpStatus.BAD_REQUEST);
+        }
+        SpeciesDetailView species = speciesService.getSpecies(request.finalSpeciesId());
+        return resolveTicket(id, new AiReviewTicketDtos.ResolveReviewTicketRequest(
+                "CONFIRMED",
+                request.finalSpeciesId(),
+                species.chineseName(),
+                species.scientificName(),
+                request.reviewNote()
+        ));
     }
 
     public MediaFile getReviewImage(Long mediaId) {

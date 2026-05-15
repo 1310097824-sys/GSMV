@@ -296,16 +296,51 @@ async function sendMessage(prefilled?: string) {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03)),
     rgba(5, 24, 57, 0.54);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 28px 56px rgba(2, 14, 38, 0.16);
+  overflow: hidden;
+}
+
+.assistant-hero__window::after {
+  content: '';
+  position: absolute;
+  right: -54px;
+  bottom: -78px;
+  width: 230px;
+  height: 230px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(110, 242, 255, 0.16), transparent 72%);
+  pointer-events: none;
 }
 
 .assistant-hero__badge,
 .assistant-hero__feature,
 .assistant-hero__preview {
+  position: relative;
+  z-index: 1;
   padding: 18px;
   border-radius: 22px;
   border: 1px solid rgba(180, 244, 255, 0.14);
-  background: rgba(255, 255, 255, 0.05);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.025)),
+    rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+.assistant-hero__feature::after,
+.assistant-story-card::after,
+.evidence-item::after {
+  content: '';
+  position: absolute;
+  right: -30px;
+  bottom: -36px;
+  width: 108px;
+  height: 108px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(110, 242, 255, 0.12), transparent 72%);
+  pointer-events: none;
 }
 
 .assistant-hero__badge span,
@@ -340,6 +375,7 @@ async function sendMessage(prefilled?: string) {
 }
 
 .assistant-story-card {
+  position: relative;
   padding: 20px 22px;
   border-radius: 24px;
   border: 1px solid rgba(178, 244, 255, 0.14);
@@ -347,9 +383,47 @@ async function sendMessage(prefilled?: string) {
     linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03)),
     rgba(6, 25, 60, 0.54);
   box-shadow: var(--gsmv-shadow-soft);
+  overflow: hidden;
+  transition:
+    transform 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.assistant-story-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(188, 247, 255, 0.24);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 20px 36px rgba(2, 15, 44, 0.16);
+}
+
+.assistant-story-card::before {
+  position: absolute;
+  top: 16px;
+  right: 18px;
+  color: rgba(139, 239, 255, 0.36);
+  font-size: 28px;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.assistant-story-card:nth-child(1)::before {
+  content: '01';
+}
+
+.assistant-story-card:nth-child(2)::before {
+  content: '02';
+}
+
+.assistant-story-card:nth-child(3)::before {
+  content: '03';
 }
 
 .assistant-story-card p {
+  position: relative;
+  z-index: 1;
   margin: 10px 0 0;
   color: rgba(232, 247, 255, 0.84);
   line-height: 1.72;
@@ -365,6 +439,20 @@ async function sendMessage(prefilled?: string) {
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+
+.assistant-workbench {
+  position: relative;
+  overflow: hidden;
+}
+
+.assistant-workbench::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(129, 238, 255, 0.34), transparent);
+  pointer-events: none;
 }
 
 .assistant-header {
@@ -392,21 +480,38 @@ async function sendMessage(prefilled?: string) {
   min-height: 440px;
   max-height: 680px;
   overflow: auto;
-  padding-right: 6px;
+  padding: 4px 8px 4px 0;
+  scrollbar-width: thin;
+}
+
+.assistant-messages::-webkit-scrollbar {
+  width: 8px;
+}
+
+.assistant-messages::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(154, 236, 255, 0.22);
 }
 
 .assistant-message {
+  position: relative;
   max-width: 88%;
   padding: 16px 18px;
   border-radius: 24px;
   border: 1px solid rgba(177, 234, 247, 0.18);
-  background: rgba(6, 38, 86, 0.72);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015)),
+    rgba(6, 38, 86, 0.72);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 14px 28px rgba(0, 9, 34, 0.12);
 }
 
 .assistant-message--user {
   margin-left: auto;
-  background: linear-gradient(135deg, rgba(32, 189, 194, 0.24), rgba(17, 113, 201, 0.26));
+  background:
+    linear-gradient(135deg, rgba(50, 205, 205, 0.26), rgba(31, 129, 215, 0.28)),
+    rgba(6, 38, 86, 0.72);
 }
 
 .assistant-message__meta {
@@ -450,24 +555,51 @@ async function sendMessage(prefilled?: string) {
 }
 
 .prompt-chip {
+  position: relative;
   width: 100%;
   padding: 14px 16px;
   border: 1px solid rgba(160, 235, 245, 0.14);
   border-radius: 18px;
-  background: rgba(9, 40, 88, 0.64);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02)),
+    rgba(9, 40, 88, 0.64);
   color: var(--gsmv-text);
   text-align: left;
   line-height: 1.6;
+  overflow: hidden;
   transition:
     transform 0.18s ease,
     border-color 0.18s ease,
-    background-color 0.18s ease;
+    background-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.prompt-chip::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  width: 7px;
+  height: 7px;
+  border-top: 2px solid rgba(145, 239, 255, 0.78);
+  border-right: 2px solid rgba(145, 239, 255, 0.78);
+  transform: translateY(-50%) rotate(45deg);
+  opacity: 0;
+  transition:
+    opacity 0.18s ease,
+    right 0.18s ease;
 }
 
 .prompt-chip:hover {
   transform: translateY(-1px);
   border-color: rgba(160, 235, 245, 0.24);
   background: rgba(17, 74, 140, 0.46);
+  box-shadow: 0 14px 28px rgba(2, 15, 44, 0.14);
+}
+
+.prompt-chip:hover::after {
+  right: 12px;
+  opacity: 1;
 }
 
 .query-tags {
@@ -504,13 +636,17 @@ async function sendMessage(prefilled?: string) {
 }
 
 .evidence-item {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 14px 16px;
   border-radius: 18px;
   border: 1px solid rgba(177, 234, 247, 0.16);
-  background: rgba(6, 38, 86, 0.6);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02)),
+    rgba(6, 38, 86, 0.6);
+  overflow: hidden;
 }
 
 .evidence-item span {
@@ -540,6 +676,10 @@ async function sendMessage(prefilled?: string) {
 
   .assistant-message {
     max-width: 100%;
+  }
+
+  .assistant-story-card::before {
+    font-size: 22px;
   }
 }
 </style>

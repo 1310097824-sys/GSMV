@@ -26,6 +26,10 @@ http.interceptors.response.use(
       }
     }
 
+    if ([502, 503, 504].includes(error.response?.status)) {
+      return Promise.reject(new Error('服务正在启动或暂时不可用，请稍后重试'))
+    }
+
     const responseMessage = error.response?.data?.message
     if (typeof responseMessage === 'string' && responseMessage.trim()) {
       return Promise.reject(new Error(responseMessage.trim()))
@@ -33,6 +37,10 @@ http.interceptors.response.use(
 
     if (error.code === 'ECONNABORTED') {
       return Promise.reject(new Error('请求超时，请稍后重试'))
+    }
+
+    if (error.message === 'Network Error') {
+      return Promise.reject(new Error('服务暂时不可达，请确认系统已完全启动'))
     }
 
     return Promise.reject(error)

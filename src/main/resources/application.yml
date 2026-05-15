@@ -53,7 +53,7 @@ gsmv:
     jwt:
       issuer: gsmv
       secret: gsmv-secret-key-please-change-in-production-2026
-      access-token-ttl-minutes: 30
+      access-token-ttl-minutes: 10080
   admin:
     enabled: true
     username: admin

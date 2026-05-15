@@ -11,8 +11,11 @@
 
 <script setup lang="ts">
 import L from 'leaflet'
+import 'leaflet.markercluster'
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ZHANJIANG_OFFSHORE_CENTER } from '@/constants/ecosystem'
+import { addPreferredTileLayer, toMapDisplayPoint } from '@/utils/mapProvider'
+import { buildMapPopupCard, createMapMarkerIcon } from '@/utils/mapMarkerTheme'
 
 interface ReportMapMarker {
   id: string | number
@@ -38,32 +41,45 @@ const props = withDefaults(
 const mapRef = ref<HTMLDivElement>()
 
 let map: L.Map | null = null
-let markerLayer: L.LayerGroup | null = null
+let markerLayer: L.MarkerClusterGroup | null = null
 let resizeObserver: ResizeObserver | null = null
+let invalidateTimer: number | null = null
 
-function escapeHtml(value: string) {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;')
+function createClusterIcon(cluster: L.MarkerCluster) {
+  const count = cluster.getChildCount()
+  const size = count >= 30 ? 52 : count >= 10 ? 46 : 40
+  return L.divIcon({
+    html: `<span>${count}</span>`,
+    className: 'gsmv-marker-cluster',
+    iconSize: L.point(size, size),
+  })
 }
 
-function buildPopup(point: ReportMapMarker) {
-  const subtitle = point.subtitle ? `<div>${escapeHtml(point.subtitle)}</div>` : ''
-  const lines = (point.lines || [])
-    .filter(Boolean)
-    .map((line) => `<div>${escapeHtml(line)}</div>`)
-    .join('')
+function scheduleInvalidateMap(delay = 80) {
+  if (!map) {
+    return
+  }
+  if (invalidateTimer != null) {
+    window.clearTimeout(invalidateTimer)
+  }
+  invalidateTimer = window.setTimeout(() => {
+    map?.invalidateSize(false)
+    invalidateTimer = null
+  }, delay)
+}
 
-  return `
-    <div style="min-width: 200px">
-      <strong>${escapeHtml(point.title)}</strong>
-      ${subtitle}
-      ${lines}
-    </div>
-  `
+function pointsSignature() {
+  return props.points
+    .map((point) => {
+      const lines = point.lines?.join('|') || ''
+      return `${point.id}:${point.lat}:${point.lng}:${point.title}:${point.subtitle || ''}:${lines}`
+    })
+    .join(';')
+}
+
+function getMarkerTone(index: number) {
+  const tones = ['aqua', 'emerald', 'violet'] as const
+  return tones[index % tones.length]
 }
 
 function ensureMap() {
@@ -71,11 +87,20 @@ function ensureMap() {
     return
   }
 
-  map = L.map(mapRef.value, { zoomControl: true }).setView(ZHANJIANG_OFFSHORE_CENTER, 3)
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap contributors',
+  map = L.map(mapRef.value, { zoomControl: true }).setView(
+    toMapDisplayPoint(ZHANJIANG_OFFSHORE_CENTER[0], ZHANJIANG_OFFSHORE_CENTER[1]),
+    3,
+  )
+  addPreferredTileLayer(map)
+  markerLayer = L.markerClusterGroup({
+    showCoverageOnHover: false,
+    spiderfyOnMaxZoom: true,
+    zoomToBoundsOnClick: true,
+    disableClusteringAtZoom: 8,
+    maxClusterRadius: 42,
+    iconCreateFunction: createClusterIcon,
   }).addTo(map)
-  markerLayer = L.layerGroup().addTo(map)
+  scheduleInvalidateMap(120)
 }
 
 function renderMarkers() {
@@ -84,24 +109,43 @@ function renderMarkers() {
     return
   }
 
-  markerLayer.clearLayers()
+  const clusterLayer = markerLayer
+  clusterLayer.clearLayers()
 
   if (!props.points.length) {
-    map.setView(ZHANJIANG_OFFSHORE_CENTER, 3)
-    window.setTimeout(() => map?.invalidateSize(), 60)
+    map.setView(toMapDisplayPoint(ZHANJIANG_OFFSHORE_CENTER[0], ZHANJIANG_OFFSHORE_CENTER[1]), 3)
+    scheduleInvalidateMap()
     return
   }
 
   const bounds: [number, number][] = []
-  props.points.forEach((point) => {
-    const marker = L.marker([point.lat, point.lng])
-    marker.bindPopup(buildPopup(point))
-    marker.addTo(markerLayer!)
-    bounds.push([point.lat, point.lng])
+  props.points.forEach((point, index) => {
+    const displayPoint = toMapDisplayPoint(point.lat, point.lng)
+    const marker = L.marker(displayPoint, {
+      icon: createMapMarkerIcon(point.title || 'M', {
+        compact: true,
+        tone: getMarkerTone(index),
+      }),
+    })
+    marker.bindPopup(
+      buildMapPopupCard({
+        eyebrow: 'Report Map',
+        title: point.title,
+        subtitle: point.subtitle,
+        lines: point.lines || [],
+      }),
+      { className: 'gsmv-map-popup' },
+    )
+    marker.addTo(clusterLayer)
+    bounds.push(displayPoint)
   })
 
-  map.fitBounds(bounds, { padding: [24, 24], maxZoom: 8 })
-  window.setTimeout(() => map?.invalidateSize(), 60)
+  if (bounds.length === 1) {
+    map.setView(bounds[0], 7, { animate: false })
+  } else {
+    map.fitBounds(bounds, { padding: [24, 24], maxZoom: 7 })
+  }
+  scheduleInvalidateMap()
 }
 
 onMounted(async () => {
@@ -110,23 +154,26 @@ onMounted(async () => {
   renderMarkers()
   if (mapRef.value) {
     resizeObserver = new ResizeObserver(() => {
-      map?.invalidateSize()
+      scheduleInvalidateMap(60)
     })
     resizeObserver.observe(mapRef.value)
   }
 })
 
 watch(
-  () => props.points,
+  () => pointsSignature(),
   () => {
     renderMarkers()
   },
-  { deep: true },
 )
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   resizeObserver = null
+  if (invalidateTimer != null) {
+    window.clearTimeout(invalidateTimer)
+    invalidateTimer = null
+  }
   markerLayer = null
   map?.remove()
   map = null

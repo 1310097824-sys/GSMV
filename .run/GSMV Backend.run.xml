@@ -1,9 +1,5 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="GSMV Backend" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
-    <envs>
-      <env name="DASHSCOPE_API_KEY" value="sk-14c33339549a421eafeca1e4db9ad6cd" />
-      <env name="DEEPSEEK_API_KEY" value="sk-3b3d2d779c414f55a23a42fa288188e0" />
-    </envs>
     <module name="GSMV" />
     <option name="SPRING_BOOT_MAIN_CLASS" value="com.gsmv.GsmvApplication" />
     <option name="WORKING_DIRECTORY" value="file://$MODULE_WORKING_DIR$" />

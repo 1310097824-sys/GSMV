@@ -6,6 +6,8 @@
 import L from 'leaflet'
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ZHANJIANG_OFFSHORE_CENTER } from '@/constants/ecosystem'
+import { addPreferredTileLayer, toMapDisplayPoint, toStoredPoint } from '@/utils/mapProvider'
+import { createMapMarkerIcon } from '@/utils/mapMarkerTheme'
 
 const props = defineProps<{
   lat?: number | null
@@ -20,52 +22,56 @@ const mapRef = ref<HTMLDivElement>()
 let map: L.Map | null = null
 let marker: L.Marker | null = null
 let resizeObserver: ResizeObserver | null = null
+let invalidateTimer: number | null = null
 
-function refreshMap() {
+function scheduleInvalidateMap(delay = 80) {
   if (!map) {
     return
   }
-
-  map.invalidateSize(false)
-
-  if (marker) {
-    map.panTo(marker.getLatLng(), { animate: false })
-    return
+  if (invalidateTimer != null) {
+    window.clearTimeout(invalidateTimer)
   }
-
-  const fallbackCenter: [number, number] =
-    props.lat != null && props.lng != null ? [props.lat, props.lng] : ZHANJIANG_OFFSHORE_CENTER
-  map.setView(fallbackCenter, map.getZoom(), { animate: false })
+  invalidateTimer = window.setTimeout(() => {
+    map?.invalidateSize(false)
+    invalidateTimer = null
+  }, delay)
 }
 
 function syncMarker(lat: number, lng: number) {
   if (!map) {
     return
   }
-  const latLng = L.latLng(lat, lng)
+  const [displayLat, displayLng] = toMapDisplayPoint(lat, lng)
+  const latLng = L.latLng(displayLat, displayLng)
   if (!marker) {
-    marker = L.marker(latLng).addTo(map)
+    marker = L.marker(latLng, {
+      icon: createMapMarkerIcon('P', {
+        active: true,
+        compact: true,
+        tone: 'emerald',
+      }),
+    }).addTo(map)
   } else {
     marker.setLatLng(latLng)
   }
-  map.panTo(latLng)
+  map.panTo(latLng, { animate: false })
 }
 
 onMounted(() => {
   if (!mapRef.value) {
     return
   }
-  const initialCenter: [number, number] =
+  const initialCenterRaw: [number, number] =
     props.lat != null && props.lng != null ? [props.lat, props.lng] : ZHANJIANG_OFFSHORE_CENTER
+  const initialCenter = toMapDisplayPoint(initialCenterRaw[0], initialCenterRaw[1])
 
   map = L.map(mapRef.value, { zoomControl: true }).setView(initialCenter, 7)
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap contributors',
-  }).addTo(map)
+  addPreferredTileLayer(map)
   map.on('click', (event) => {
+    const [storedLat, storedLng] = toStoredPoint(event.latlng.lat, event.latlng.lng)
     const payload = {
-      lat: Number(event.latlng.lat.toFixed(6)),
-      lng: Number(event.latlng.lng.toFixed(6)),
+      lat: Number(storedLat.toFixed(6)),
+      lng: Number(storedLng.toFixed(6)),
     }
     syncMarker(payload.lat, payload.lng)
     emit('update', payload)
@@ -76,13 +82,13 @@ onMounted(() => {
 
   nextTick(() => {
     window.setTimeout(() => {
-      refreshMap()
+      scheduleInvalidateMap(120)
     }, 250)
   })
 
   if (typeof ResizeObserver !== 'undefined') {
     resizeObserver = new ResizeObserver(() => {
-      refreshMap()
+      scheduleInvalidateMap(60)
     })
     resizeObserver.observe(mapRef.value)
   }
@@ -100,6 +106,10 @@ watch(
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   resizeObserver = null
+  if (invalidateTimer != null) {
+    window.clearTimeout(invalidateTimer)
+    invalidateTimer = null
+  }
   map?.remove()
   map = null
   marker = null

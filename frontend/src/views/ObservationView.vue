@@ -233,6 +233,52 @@
           </div>
         </div>
 
+        <el-divider>AI 质量评分</el-divider>
+
+        <div class="quality-panel">
+          <div class="quality-panel__header">
+            <div>
+              <strong>观测记录完整性与异常风险</strong>
+              <p>基于坐标、环境参数、物种关联和备注完整度，快速判断这条记录是否需要人工复核。</p>
+            </div>
+            <el-button type="primary" plain :loading="qualityChecking" @click="runQualityCheck">AI 评分</el-button>
+          </div>
+
+          <template v-if="qualityResult">
+            <div class="quality-panel__score">
+              <el-progress
+                type="dashboard"
+                :percentage="qualityResult.score"
+                :color="qualityResult.needsReview ? '#ff9f43' : '#46d7c8'"
+                :width="108"
+              />
+              <div>
+                <el-tag :type="qualityGradeType(qualityResult.grade)" effect="dark">
+                  {{ qualityGradeLabel(qualityResult.grade) }}
+                </el-tag>
+                <p>{{ qualityResult.summary }}</p>
+              </div>
+            </div>
+
+            <div v-if="qualityResult.strengths.length" class="quality-panel__chips">
+              <el-tag v-for="item in qualityResult.strengths" :key="item" effect="plain">{{ item }}</el-tag>
+            </div>
+
+            <div v-if="qualityResult.issues.length" class="quality-panel__issues">
+              <div v-for="item in qualityResult.issues" :key="`${item.title}-${item.message}`" class="quality-issue">
+                <el-tag :type="qualityIssueTagType(item.severity)" effect="dark">{{ item.severity }}</el-tag>
+                <div>
+                  <strong>{{ item.title }}</strong>
+                  <p>{{ item.message }}</p>
+                  <small>{{ item.suggestion }}</small>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <el-empty v-else description="点击 AI 评分后展示质量分、风险项和补充建议。" :image-size="76" />
+        </div>
+
         <el-divider>关联物种</el-divider>
 
         <el-table :data="detail.speciesItems" size="small">
@@ -263,7 +309,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { analyzeObservationWithAi } from '@/api/ai'
+import { analyzeObservationWithAi, qualityCheckObservationWithAi } from '@/api/ai'
 import { fetchAllEcosystems } from '@/api/ecosystems'
 import {
   createObservation,
@@ -289,6 +335,7 @@ import {
 } from '@/utils/observationEnv'
 import type {
   AiObservationAnalysisResponse,
+  AiObservationQualityResponse,
   Ecosystem,
   EntityVersionView,
   ObservationDetailView,
@@ -314,6 +361,8 @@ const speciesOptions = ref<SpeciesView[]>([])
 const defaultEcosystemId = ref<number | undefined>()
 const aiAnalyzing = ref(false)
 const aiAnalysis = ref<AiObservationAnalysisResponse | null>(null)
+const qualityChecking = ref(false)
+const qualityResult = ref<AiObservationQualityResponse | null>(null)
 
 let stopDataSync: (() => void) | undefined
 
@@ -591,6 +640,7 @@ async function submit() {
 
 async function showDetail(id: number) {
   try {
+    qualityResult.value = null
     const [detailData, versionsData] = await Promise.all([
       fetchObservationDetail(id),
       fetchObservationVersions(id),
@@ -600,6 +650,52 @@ async function showDetail(id: number) {
     detailVisible.value = true
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '详情加载失败')
+  }
+}
+
+function qualityGradeLabel(grade: string) {
+  if (grade === 'HIGH') {
+    return '质量较高'
+  }
+  if (grade === 'MEDIUM') {
+    return '需要补充'
+  }
+  return '建议复核'
+}
+
+function qualityGradeType(grade: string) {
+  if (grade === 'HIGH') {
+    return 'success'
+  }
+  if (grade === 'MEDIUM') {
+    return 'warning'
+  }
+  return 'danger'
+}
+
+function qualityIssueTagType(severity: string) {
+  if (severity === 'HIGH') {
+    return 'danger'
+  }
+  if (severity === 'MEDIUM') {
+    return 'warning'
+  }
+  return 'info'
+}
+
+async function runQualityCheck() {
+  if (!detail.value) {
+    return
+  }
+
+  qualityChecking.value = true
+  try {
+    qualityResult.value = await qualityCheckObservationWithAi(detail.value.id)
+    ElMessage.success(qualityResult.value.needsReview ? 'AI 已标出需要复核的风险项' : 'AI 评分完成，记录质量良好')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : 'AI 质量评分失败')
+  } finally {
+    qualityChecking.value = false
   }
 }
 
@@ -841,31 +937,286 @@ onBeforeUnmount(() => {
   border: 1px dashed var(--gsmv-border);
   border-radius: 16px;
   color: var(--gsmv-muted);
-  background: rgba(255, 255, 255, 0.7);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.03)),
+    rgba(5, 24, 60, 0.76);
 }
 
 .env-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+  margin-top: 8px;
 }
 
 .env-grid__item {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 14px 16px;
-  border: 1px solid var(--gsmv-border);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.9);
+  min-height: 92px;
+  padding: 16px 18px;
+  border: 1px solid rgba(157, 233, 255, 0.16);
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(110, 233, 255, 0.12), transparent 34%),
+    linear-gradient(180deg, rgba(10, 41, 93, 0.92), rgba(5, 21, 58, 0.96));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 14px 28px rgba(2, 14, 44, 0.2);
+}
+
+.env-grid__item strong {
+  color: #f3fdff;
+  font-size: 15px;
+  letter-spacing: 0.04em;
 }
 
 .env-grid__item span {
-  color: var(--gsmv-muted);
+  color: rgba(222, 246, 255, 0.88);
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.16;
+  letter-spacing: -0.03em;
+}
+
+.quality-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 8px;
+  padding: 18px;
+  border: 1px solid rgba(152, 225, 255, 0.2);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(83, 217, 255, 0.2), transparent 34%),
+    linear-gradient(145deg, rgba(9, 42, 96, 0.94), rgba(5, 20, 58, 0.98));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 18px 32px rgba(2, 14, 44, 0.18);
+}
+
+.quality-panel__header,
+.quality-panel__score,
+.quality-issue {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.quality-panel__header {
+  justify-content: space-between;
+}
+
+.quality-panel__header strong {
+  display: block;
+  color: #f6fdff;
+  font-size: 18px;
+}
+
+.quality-panel__header p,
+.quality-panel__score p,
+.quality-issue p,
+.quality-issue small {
+  margin: 8px 0 0;
+  color: rgba(225, 247, 255, 0.78);
+  line-height: 1.75;
+}
+
+.quality-panel__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.quality-panel__issues {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.quality-issue {
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(174, 231, 255, 0.12);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02)),
+    rgba(5, 24, 60, 0.72);
+}
+
+:deep(.el-drawer__body > .el-descriptions) {
+  margin-top: 6px;
+  border-radius: 22px;
+  overflow: hidden;
+  border: 1px solid rgba(152, 225, 255, 0.14);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 16px 28px rgba(2, 14, 44, 0.14);
+}
+
+:deep(.el-drawer__body > .el-descriptions:first-child) {
+  position: relative;
+  margin-top: 0;
+  padding-top: 58px;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(83, 217, 255, 0.18), transparent 34%),
+    linear-gradient(145deg, rgba(9, 42, 96, 0.94), rgba(5, 20, 58, 0.98));
+}
+
+:deep(.el-drawer__body > .el-descriptions:first-child::before) {
+  content: 'Observation Summary';
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 11px;
+  border-radius: 999px;
+  background: rgba(90, 232, 255, 0.1);
+  border: 1px solid rgba(156, 241, 255, 0.18);
+  color: #7feaff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  z-index: 1;
+}
+
+:deep(.el-drawer__body > .el-descriptions:first-child .el-descriptions__table) {
+  position: relative;
+  z-index: 1;
+}
+
+:deep(.el-drawer__body > .el-descriptions:first-child .el-descriptions__content.el-descriptions__cell) {
+  color: #f5fdff !important;
+  font-size: 15px;
+}
+
+:deep(.el-drawer__body > .el-divider),
+:deep(.el-drawer__body .quality-panel + .el-divider),
+:deep(.el-drawer__body .env-grid + .el-divider),
+:deep(.el-drawer__body .el-table + .el-divider) {
+  margin: 24px 0 18px;
+}
+
+:deep(.el-drawer__body > .el-table),
+:deep(.el-drawer__body > .version-history-panel),
+:deep(.el-drawer__body > .quality-panel),
+:deep(.el-drawer__body > .env-grid) {
+  position: relative;
+  margin-top: 6px;
+}
+
+:deep(.el-drawer__body > .env-grid) {
+  padding-top: 46px;
+}
+
+:deep(.el-drawer__body > .env-grid::before) {
+  content: 'Environmental Snapshot';
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 11px;
+  border-radius: 999px;
+  background: rgba(90, 232, 255, 0.1);
+  border: 1px solid rgba(156, 241, 255, 0.18);
+  color: #7feaff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+:deep(.el-drawer__body > .quality-panel) {
+  padding-top: 54px;
+}
+
+:deep(.el-drawer__body > .quality-panel::before) {
+  content: 'AI Quality Review';
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 11px;
+  border-radius: 999px;
+  background: rgba(90, 232, 255, 0.1);
+  border: 1px solid rgba(156, 241, 255, 0.18);
+  color: #7feaff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+:deep(.el-drawer__body > .el-table) {
+  padding: 54px 10px 10px;
+  border-radius: 22px;
+  border: 1px solid rgba(150, 232, 255, 0.12);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
+    rgba(4, 20, 52, 0.62);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 16px 28px rgba(2, 14, 44, 0.14);
+}
+
+:deep(.el-drawer__body > .el-table::before) {
+  content: 'Species Matrix';
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 11px;
+  border-radius: 999px;
+  background: rgba(90, 232, 255, 0.1);
+  border: 1px solid rgba(156, 241, 255, 0.18);
+  color: #7feaff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  z-index: 2;
+}
+
+:deep(.el-drawer__body > .version-history-panel) {
+  padding: 54px 14px 14px;
+  border-radius: 22px;
+  border: 1px solid rgba(150, 232, 255, 0.12);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
+    rgba(4, 20, 52, 0.62);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 16px 28px rgba(2, 14, 44, 0.14);
+}
+
+:deep(.el-drawer__body > .version-history-panel::before) {
+  content: 'Version Timeline';
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 11px;
+  border-radius: 999px;
+  background: rgba(90, 232, 255, 0.1);
+  border: 1px solid rgba(156, 241, 255, 0.18);
+  color: #7feaff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  z-index: 2;
 }
 
 @media (max-width: 1080px) {
   .ai-card__header,
+  .quality-panel__header,
+  .quality-panel__score,
+  .quality-issue,
   .anomaly-item,
   .observation-form {
     grid-template-columns: 1fr;

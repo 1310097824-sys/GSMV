@@ -352,6 +352,23 @@ export interface AiObservationAnalysisResponse {
   needsReview: boolean
 }
 
+export interface AiObservationQualityIssue {
+  severity: string
+  title: string
+  message: string
+  suggestion?: string
+}
+
+export interface AiObservationQualityResponse {
+  observationId: number
+  score: number
+  grade: string
+  summary: string
+  strengths: string[]
+  issues: AiObservationQualityIssue[]
+  needsReview: boolean
+}
+
 export interface AiAssistantStructuredQuery {
   intent: string
   locationKeyword?: string
@@ -415,4 +432,22 @@ export interface AiReviewTicketDetailView extends AiReviewTicketView {
   finalChineseName?: string
   finalScientificName?: string
   reviewNote?: string
+}
+
+export interface AiReportView {
+  id: number
+  reportType: string
+  days: number
+  title: string
+  summary: string
+  createdBy: number
+  creatorName: string
+  createdAt: string
+}
+
+export interface AiReportDetailView extends AiReportView {
+  highlights: string[]
+  risks: string[]
+  recommendations: string[]
+  evidence: string[]
 }
