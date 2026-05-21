@@ -1,6 +1,7 @@
 package com.gsmv.ai.review.dto;
 
 import com.gsmv.ai.dto.SpeciesAiDtos;
+import com.gsmv.ai.rag.dto.RagDtos;
 import jakarta.validation.constraints.NotBlank;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -18,6 +19,9 @@ public final class AiReviewTicketDtos {
             String reasoning,
             List<SpeciesAiDtos.IdentificationCandidate> candidates,
             List<SpeciesAiDtos.RelatedSpeciesRecord> relatedSpeciesRecords,
+            List<RagDtos.RagEvidenceItem> ragEvidence,
+            String ragConclusion,
+            List<String> conflictWarnings,
             String submitNote
     ) {
     }
@@ -86,6 +90,9 @@ public final class AiReviewTicketDtos {
             String reasoning,
             List<SpeciesAiDtos.IdentificationCandidate> candidates,
             List<SpeciesAiDtos.RelatedSpeciesRecord> relatedSpeciesRecords,
+            List<RagDtos.RagEvidenceItem> ragEvidence,
+            String initialRecognitionJson,
+            String reviewEvidenceJson,
             String submitNote,
             Long finalSpeciesId,
             String finalChineseName,

@@ -39,8 +39,14 @@ public final class AssistantAiDtos {
     public record EvidenceItem(
             String type,
             String title,
-            String description
+            String description,
+            Long sourceId,
+            Double score,
+            String sourcePath
     ) {
+        public EvidenceItem(String type, String title, String description) {
+            this(type, title, description, null, null, null);
+        }
     }
 
     public record ChatResponse(
@@ -49,6 +55,13 @@ public final class AssistantAiDtos {
             List<String> highlights,
             List<EvidenceItem> evidence,
             boolean cacheHit
+    ) {
+    }
+
+    public record ChatStreamEvent(
+            String type,
+            String content,
+            ChatResponse response
     ) {
     }
 }

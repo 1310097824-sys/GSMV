@@ -16,8 +16,8 @@ spring:
     default-property-inclusion: non_null
   servlet:
     multipart:
-      max-file-size: 10MB
-      max-request-size: 20MB
+      max-file-size: 50MB
+      max-request-size: 200MB
 
 mybatis:
   configuration:
@@ -44,11 +44,30 @@ gsmv:
       api-key: ${BAILIAN_API_KEY:${DASHSCOPE_API_KEY:}}
       base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
       vision-model: qwen-vl-plus
+      embedding-model: text-embedding-v4
+      embedding-dimension: 1024
     deepseek:
       enabled: true
       api-key: ${DEEPSEEK_API_KEY:}
       base-url: https://api.deepseek.com
       chat-model: deepseek-chat
+  rag:
+    vector:
+      provider: qdrant
+    qdrant:
+      enabled: true
+      url: ${QDRANT_URL:http://localhost:6333}
+      collection: ${QDRANT_COLLECTION:gsmv_rag_chunks}
+    embedding:
+      model: text-embedding-v4
+      dimension: 1024
+    ingest:
+      max-file-size: 50MB
+      allowed-domains:
+        - api.obis.org
+        - api.gbif.org
+        - www.marinespecies.org
+        - api.iucnredlist.org
   security:
     jwt:
       issuer: gsmv

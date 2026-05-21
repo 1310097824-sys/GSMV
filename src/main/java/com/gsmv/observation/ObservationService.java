@@ -1,6 +1,7 @@
 package com.gsmv.observation;
 
 import com.gsmv.ai.AssistantQueryCache;
+import com.gsmv.ai.rag.RagKnowledgeService;
 import com.gsmv.audit.service.AuditService;
 import com.gsmv.common.ErrorCode;
 import com.gsmv.common.PageResponse;
@@ -40,6 +41,7 @@ public class ObservationService {
     private final AuditService auditService;
     private final AssistantQueryCache assistantQueryCache;
     private final EntityVersionService entityVersionService;
+    private final RagKnowledgeService ragKnowledgeService;
 
     public ObservationService(
             ObservationMapper observationMapper,
@@ -47,7 +49,8 @@ public class ObservationService {
             SpeciesMapper speciesMapper,
             AuditService auditService,
             AssistantQueryCache assistantQueryCache,
-            EntityVersionService entityVersionService
+            EntityVersionService entityVersionService,
+            RagKnowledgeService ragKnowledgeService
     ) {
         this.observationMapper = observationMapper;
         this.ecosystemMapper = ecosystemMapper;
@@ -55,6 +58,7 @@ public class ObservationService {
         this.auditService = auditService;
         this.assistantQueryCache = assistantQueryCache;
         this.entityVersionService = entityVersionService;
+        this.ragKnowledgeService = ragKnowledgeService;
     }
 
     public PageResponse<ObservationView> list(
@@ -129,6 +133,7 @@ public class ObservationService {
                 null
         );
         assistantQueryCache.invalidateAll();
+        ragKnowledgeService.syncObservation(observation.getId());
         auditService.record(currentUser.userId(), "OBSERVATION", "CREATE", "OBSERVATION", observation.getId(), true,
                 "{\"ecosystemId\":" + request.ecosystemId() + ",\"speciesCount\":" + normalizedSpeciesItems.size() + "}");
         return detailView;
@@ -158,6 +163,7 @@ public class ObservationService {
                 null
         );
         assistantQueryCache.invalidateAll();
+        ragKnowledgeService.syncObservation(id);
         auditService.record(SecurityUtils.requireCurrentUser().userId(), "OBSERVATION", "UPDATE", "OBSERVATION", id, true,
                 "{\"ecosystemId\":" + request.ecosystemId() + ",\"speciesCount\":" + normalizedSpeciesItems.size() + "}");
         return detailView;
@@ -183,6 +189,7 @@ public class ObservationService {
                 null
         );
         assistantQueryCache.invalidateAll();
+        ragKnowledgeService.markSourceDeleted(RagKnowledgeService.SOURCE_OBSERVATION, id);
         auditService.record(currentUserId, "OBSERVATION", "DELETE", "OBSERVATION", id, true,
                 "{\"ecosystemId\":" + existing.getEcosystemId() + "}");
     }
@@ -221,6 +228,7 @@ public class ObservationService {
                 versionId
         );
         assistantQueryCache.invalidateAll();
+        ragKnowledgeService.syncObservation(id);
         auditService.record(currentUserId, "OBSERVATION", "ROLLBACK", "OBSERVATION", id, true,
                 "{\"versionId\":" + versionId + "}");
         return detailView;

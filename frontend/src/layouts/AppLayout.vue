@@ -111,6 +111,7 @@ const menus = [
   { path: '/assistant', label: 'AI 助手', icon: ChatDotRound },
   { path: '/ai-reviews', label: 'AI 复核', icon: Finished, authority: 'AI_REVIEW_READ' },
   { path: '/ai-reports', label: 'AI 科研报告', icon: Document, authority: 'REPORT_READ' },
+  { path: '/rag-knowledge', label: 'RAG 知识中台', icon: Notebook, authority: 'RAG_READ' },
   { path: '/reports', label: '统计报表', icon: Histogram, authority: 'REPORT_READ' },
   { path: '/audits', label: '审计日志', icon: Setting, authority: 'AUDIT_READ' },
   { path: '/users', label: '用户权限', icon: User, authority: 'USER_ADMIN' },

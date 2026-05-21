@@ -92,11 +92,14 @@
                 <li v-for="item in detail.recommendations" :key="item">{{ item }}</li>
               </ul>
             </article>
-            <article>
-              <h4>数据依据</h4>
-              <ul>
-                <li v-for="item in detail.evidence" :key="item">{{ item }}</li>
-              </ul>
+            <article class="report-evidence-section">
+              <h4>RAG / 数据依据</h4>
+              <div class="report-evidence-list">
+                <div v-for="item in detail.evidence" :key="item" class="report-evidence-card">
+                  <span>Evidence</span>
+                  <p>{{ item }}</p>
+                </div>
+              </div>
             </article>
           </div>
         </template>
@@ -272,6 +275,37 @@ onMounted(() => {
   padding-left: 18px;
   color: var(--gsmv-muted);
   line-height: 1.8;
+}
+
+.report-evidence-section {
+  background:
+    linear-gradient(135deg, rgba(76, 214, 255, 0.12), rgba(7, 25, 70, 0.72)),
+    rgba(8, 33, 78, 0.54);
+}
+
+.report-evidence-list {
+  display: grid;
+  gap: 10px;
+}
+
+.report-evidence-card {
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(125, 211, 252, 0.16);
+  background: rgba(4, 18, 52, 0.52);
+}
+
+.report-evidence-card span {
+  color: #70f3ff;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.report-evidence-card p {
+  margin: 6px 0 0;
+  color: var(--gsmv-muted);
+  line-height: 1.75;
 }
 
 @media (max-width: 1180px) {

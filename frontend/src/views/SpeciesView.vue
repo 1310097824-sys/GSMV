@@ -143,6 +143,32 @@
             </div>
           </div>
 
+          <div v-if="identifyResult.ragEvidence?.length || identifyResult.conflictWarnings?.length" class="identify-section rag-evidence-strip">
+            <h3>RAG 识别依据</h3>
+            <el-alert
+              v-if="identifyResult.ragConclusion"
+              :title="identifyResult.ragConclusion"
+              type="info"
+              :closable="false"
+              show-icon
+            />
+            <el-alert
+              v-for="warning in identifyResult.conflictWarnings"
+              :key="warning"
+              :title="warning"
+              type="warning"
+              :closable="false"
+              show-icon
+            />
+            <div class="rag-evidence-list">
+              <article v-for="item in identifyResult.ragEvidence" :key="item.chunkId" class="rag-evidence-card">
+                <strong>{{ item.title }}</strong>
+                <span>{{ item.sourceName || item.sourceType }} · score {{ toPercent(item.score) }}</span>
+                <p>{{ item.summary || item.contentSnippet }}</p>
+              </article>
+            </div>
+          </div>
+
           <div class="identify-section">
             <h3>人工复核工单</h3>
             <el-input
@@ -794,6 +820,9 @@ async function submitReviewTicket() {
         reasoning: identifyResult.value.reasoning,
         candidates: identifyResult.value.candidates,
         relatedSpeciesRecords: identifyResult.value.relatedSpeciesRecords,
+        ragEvidence: identifyResult.value.ragEvidence,
+        ragConclusion: identifyResult.value.ragConclusion,
+        conflictWarnings: identifyResult.value.conflictWarnings,
         submitNote: manualReviewNote.value || undefined,
       },
       file,
@@ -1331,6 +1360,37 @@ onBeforeUnmount(() => {
 
 .candidate-item p {
   margin: 0;
+}
+
+.rag-evidence-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.rag-evidence-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border-radius: 20px;
+  background:
+    linear-gradient(135deg, rgba(86, 219, 247, 0.16), rgba(16, 45, 95, 0.72)),
+    rgba(5, 25, 67, 0.7);
+  border: 1px solid rgba(113, 225, 255, 0.22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.rag-evidence-card span {
+  color: #83ecff;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.rag-evidence-card p {
+  margin: 0;
+  color: var(--gsmv-muted);
+  line-height: 1.7;
 }
 
 .related-item {

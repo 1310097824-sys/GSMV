@@ -3,6 +3,8 @@ package com.gsmv.ai;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gsmv.ai.dto.ObservationAiDtos;
+import com.gsmv.ai.rag.RagKnowledgeService;
+import com.gsmv.ai.rag.RagSearchHit;
 import com.gsmv.audit.service.AuditService;
 import com.gsmv.observation.ObservationService;
 import com.gsmv.observation.dto.ObservationDetailView;
@@ -28,19 +30,22 @@ public class ObservationAiService {
     private final ObservationService observationService;
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
+    private final RagKnowledgeService ragKnowledgeService;
 
     public ObservationAiService(
             AiModelGateway aiModelGateway,
             SpeciesService speciesService,
             ObservationService observationService,
             AuditService auditService,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            RagKnowledgeService ragKnowledgeService
     ) {
         this.aiModelGateway = aiModelGateway;
         this.speciesService = speciesService;
         this.observationService = observationService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
+        this.ragKnowledgeService = ragKnowledgeService;
     }
 
     public ObservationAiDtos.AnalyzeObservationResponse analyze(ObservationAiDtos.AnalyzeObservationRequest request) {
@@ -63,6 +68,7 @@ public class ObservationAiService {
                         备注：%s
                         关联物种：%s
                         已检测到的异常提示：%s
+                        RAG知识库参考：%s
 
                         请返回 JSON：
                         {
@@ -83,7 +89,8 @@ public class ObservationAiService {
                         environmentSummary(request.environment()),
                         safe(request.note()),
                         speciesSummary(request.speciesItems()),
-                        anomalySummary(anomalies)
+                        anomalySummary(anomalies),
+                        ragContext(request.ecosystemName() + " " + safe(request.locationName()) + " " + speciesSummary(request.speciesItems()))
                 ))
         ));
 
@@ -422,6 +429,20 @@ public class ObservationAiService {
             values.add(anomaly.speciesName() + "：" + anomaly.message());
         }
         return String.join("；", values);
+    }
+
+    private String ragContext(String query) {
+        if (!StringUtils.hasText(query)) {
+            return "无";
+        }
+        List<RagSearchHit> hits = ragKnowledgeService.retrieveForScenario(RagKnowledgeService.SCENARIO_OBSERVATION_ANALYSIS, query, 4);
+        if (hits.isEmpty()) {
+            return "无";
+        }
+        return hits.stream()
+                .map(hit -> hit.title() + "：" + firstNonBlank(hit.summary(), hit.content()))
+                .toList()
+                .toString();
     }
 
     private int compare(BigDecimal value, double compareTo) {

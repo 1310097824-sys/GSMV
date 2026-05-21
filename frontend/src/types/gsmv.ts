@@ -285,6 +285,10 @@ export interface AiIdentifyImageResponse {
   reasoning?: string
   candidates: AiIdentificationCandidate[]
   relatedSpeciesRecords: AiRelatedSpeciesRecord[]
+  ragEvidence: RagEvidenceItem[]
+  confidenceAdjustedByRag: boolean
+  ragConclusion?: string
+  conflictWarnings: string[]
 }
 
 export interface AiSpeciesAutocompleteResponse {
@@ -387,6 +391,9 @@ export interface AiAssistantEvidenceItem {
   type?: string
   title?: string
   description?: string
+  sourceId?: number
+  score?: number
+  sourcePath?: string
 }
 
 export interface AiAssistantMessage {
@@ -400,6 +407,12 @@ export interface AiAssistantChatResponse {
   highlights: string[]
   evidence: AiAssistantEvidenceItem[]
   cacheHit: boolean
+}
+
+export interface AiAssistantStreamEvent {
+  type: 'status' | 'delta' | 'final' | 'error'
+  content?: string
+  response?: AiAssistantChatResponse
 }
 
 export interface AiReviewTicketView {
@@ -427,6 +440,9 @@ export interface AiReviewTicketDetailView extends AiReviewTicketView {
   reasoning?: string
   candidates: AiIdentificationCandidate[]
   relatedSpeciesRecords: AiRelatedSpeciesRecord[]
+  ragEvidence: RagEvidenceItem[]
+  initialRecognitionJson?: string
+  reviewEvidenceJson?: string
   submitNote?: string
   finalSpeciesId?: number
   finalChineseName?: string
@@ -450,4 +466,138 @@ export interface AiReportDetailView extends AiReportView {
   risks: string[]
   recommendations: string[]
   evidence: string[]
+}
+
+export interface RagDocumentView {
+  id: number
+  sourceType: string
+  sourceId?: number
+  mediaId?: number
+  title: string
+  originalFilename?: string
+  contentType?: string
+  status: string
+  chunkCount: number
+  errorMessage?: string
+  uploadedBy?: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface RagChunkView {
+  id: number
+  documentId: number
+  sourceType: string
+  sourceId?: number
+  chunkIndex: number
+  title: string
+  summary?: string
+  content: string
+  vectorPointId?: string
+  embeddingStatus?: string
+  embeddingError?: string
+  characterCount: number
+  status: string
+  createdAt: string
+}
+
+export interface RagEvidenceItem {
+  sourceType: string
+  sourceId?: number
+  documentId: number
+  chunkId: number
+  title: string
+  summary?: string
+  contentSnippet?: string
+  score: number
+  sourcePath?: string
+  sourceName?: string
+  scenario?: string
+}
+
+export interface RagDocumentDetailView {
+  document: RagDocumentView
+  chunks: RagChunkView[]
+}
+
+export interface RagIndexJobView {
+  id: number
+  jobType: string
+  status: string
+  targetSourceType?: string
+  targetSourceId?: number
+  totalDocuments: number
+  totalChunks: number
+  successCount: number
+  failedCount: number
+  errorMessage?: string
+  startedAt: string
+  finishedAt?: string
+  createdBy?: number
+  createdAt: string
+}
+
+export interface RagSearchResultView {
+  chunkId: number
+  documentId: number
+  sourceType: string
+  sourceId?: number
+  title: string
+  summary?: string
+  content: string
+  score: number
+  cosineScore: number
+  keywordScore: number
+  sourcePath?: string
+}
+
+export interface RagIngestJobView {
+  id: number
+  jobType: string
+  status: string
+  sourceCode?: string
+  title?: string
+  totalItems: number
+  processedItems: number
+  successCount: number
+  failedCount: number
+  errorMessage?: string
+  createdBy?: number
+  startedAt: string
+  finishedAt?: string
+  createdAt: string
+}
+
+export interface RagIngestItemView {
+  id: number
+  jobId: number
+  sourceType: string
+  sourceCode?: string
+  externalId?: string
+  sourceUrl?: string
+  localPath?: string
+  mediaId?: number
+  ragDocumentId?: number
+  title?: string
+  status: string
+  errorMessage?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface RagSourceView {
+  id: number
+  code: string
+  name: string
+  sourceType: string
+  baseUrl?: string
+  enabled: boolean
+}
+
+export interface QdrantStatusView {
+  available: boolean
+  status: string
+  pointsCount: number
+  readyChunks: number
+  errorMessage?: string
 }

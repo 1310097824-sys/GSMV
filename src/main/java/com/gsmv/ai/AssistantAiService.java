@@ -1,6 +1,8 @@
 package com.gsmv.ai;
 
 import com.gsmv.ai.dto.AssistantAiDtos;
+import com.gsmv.ai.rag.RagKnowledgeService;
+import com.gsmv.ai.rag.RagSearchHit;
 import com.gsmv.audit.service.AuditService;
 import com.gsmv.common.PageResponse;
 import com.gsmv.observation.ObservationService;
@@ -88,6 +90,8 @@ public class AssistantAiService {
     private final ReportService reportService;
     private final AuditService auditService;
     private final AssistantQueryCache assistantQueryCache;
+    private final RagKnowledgeService ragKnowledgeService;
+    private final AiModelGateway aiModelGateway;
 
     public AssistantAiService(
             AiProperties aiProperties,
@@ -95,7 +99,9 @@ public class AssistantAiService {
             SpeciesService speciesService,
             ReportService reportService,
             AuditService auditService,
-            AssistantQueryCache assistantQueryCache
+            AssistantQueryCache assistantQueryCache,
+            RagKnowledgeService ragKnowledgeService,
+            AiModelGateway aiModelGateway
     ) {
         this.aiProperties = aiProperties;
         this.observationService = observationService;
@@ -103,6 +109,8 @@ public class AssistantAiService {
         this.reportService = reportService;
         this.auditService = auditService;
         this.assistantQueryCache = assistantQueryCache;
+        this.ragKnowledgeService = ragKnowledgeService;
+        this.aiModelGateway = aiModelGateway;
     }
 
     public AssistantAiDtos.ChatResponse chat(AssistantAiDtos.ChatRequest request) {
@@ -127,7 +135,8 @@ public class AssistantAiService {
             response = buildLightweightResponse(plan, request);
         } else {
             AssistantContext context = collectContext(plan);
-            response = buildLocalResponse(plan, context);
+            List<RagSearchHit> ragHits = ragKnowledgeService.retrieveForScenario(RagKnowledgeService.SCENARIO_ASSISTANT, request.message(), 6);
+            response = buildConversationalResponse(request, plan, context, ragHits);
         }
         assistantQueryCache.put(cacheKey, response);
 
@@ -151,6 +160,245 @@ public class AssistantAiService {
                 response.evidence(),
                 cacheHit
         );
+    }
+
+    private AssistantAiDtos.ChatResponse enrichWithRag(AssistantAiDtos.ChatResponse response, String question) {
+        List<RagSearchHit> hits = ragKnowledgeService.retrieveForScenario(RagKnowledgeService.SCENARIO_ASSISTANT, question, 6);
+        if (hits.isEmpty()) {
+            return response;
+        }
+        List<AssistantAiDtos.EvidenceItem> evidence = new ArrayList<>(response.evidence());
+        hits.stream().limit(4).forEach(hit -> evidence.add(new AssistantAiDtos.EvidenceItem(
+                "rag:" + hit.sourceType().toLowerCase(Locale.ROOT),
+                hit.title(),
+                firstNonBlank(hit.summary(), truncateForReply(hit.content(), 120)),
+                hit.sourceId(),
+                hit.score(),
+                hit.sourcePath()
+        )));
+        List<String> highlights = new ArrayList<>(response.highlights());
+        highlights.add("RAG 知识库命中 " + hits.size() + " 条证据");
+        String ragSummary = hits.stream()
+                .limit(2)
+                .map(hit -> "《" + hit.title() + "》")
+                .collect(Collectors.joining("、"));
+        String answer = response.answer()
+                + " 知识库补充证据主要来自 "
+                + ragSummary
+                + "，可在右侧证据区继续查看来源。";
+        return new AssistantAiDtos.ChatResponse(
+                answer,
+                response.structuredQuery(),
+                highlights.stream().limit(5).toList(),
+                evidence.stream().limit(10).toList(),
+                response.cacheHit()
+        );
+    }
+
+    private AssistantAiDtos.ChatResponse buildConversationalResponse(
+            AssistantAiDtos.ChatRequest request,
+            AssistantAiDtos.StructuredQuery plan,
+            AssistantContext context,
+            List<RagSearchHit> ragHits
+    ) {
+        AssistantAiDtos.ChatResponse localResponse = buildLocalResponse(plan, context);
+        List<AssistantAiDtos.EvidenceItem> evidence = mergeEvidence(localResponse.evidence(), ragHits);
+        List<String> highlights = buildConversationalHighlights(localResponse.highlights(), ragHits);
+
+        try {
+            String answer = aiModelGateway.deepSeekText(buildConversationMessages(request, plan, context, ragHits));
+            if (!StringUtils.hasText(answer)) {
+                answer = softenLocalAnswer(localResponse.answer());
+            }
+            return new AssistantAiDtos.ChatResponse(
+                    normalizeAssistantAnswer(answer),
+                    plan,
+                    highlights,
+                    evidence,
+                    false
+            );
+        } catch (RuntimeException ignored) {
+            return new AssistantAiDtos.ChatResponse(
+                    softenLocalAnswer(localResponse.answer()),
+                    plan,
+                    highlights,
+                    evidence,
+                    false
+            );
+        }
+    }
+
+    private List<Map<String, Object>> buildConversationMessages(
+            AssistantAiDtos.ChatRequest request,
+            AssistantAiDtos.StructuredQuery plan,
+            AssistantContext context,
+            List<RagSearchHit> ragHits
+    ) {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        messages.add(AiModelGateway.message("system", """
+                你是 GSMV 海洋生物多样性管理台里的 AI 助手，但回答要像正常对话助手一样自然。
+                直接回答用户问题，不要模板化，不要总说“按当前筛选条件”“系统中匹配到”。
+                用户问“介绍一下/是什么/某个物种名”时，默认按科普介绍来回答：先说明它是什么，再讲特征、分布、保护状态和系统内相关记录。
+                系统数据和 RAG 证据是参考资料，不要机械罗列；可以自然地说“我这里查到...”。
+                如果资料不足，可以结合通用海洋生物知识回答，但要避免编造具体系统记录。
+                回答使用中文，语气专业、顺口、像 GPT 一样会解释；一般控制在 2 到 5 个短段落。
+                """));
+
+        List<AssistantAiDtos.ConversationMessage> history = request.history() == null ? List.of() : request.history();
+        history.stream()
+                .filter(item -> item != null && StringUtils.hasText(item.role()) && StringUtils.hasText(item.content()))
+                .skip(Math.max(0, history.size() - 6))
+                .forEach(item -> messages.add(AiModelGateway.message(normalizeRole(item.role()), truncateForPrompt(item.content(), 700))));
+
+        messages.add(AiModelGateway.message("user", """
+                用户问题：
+                %s
+
+                结构化理解：
+                %s
+
+                系统数据摘要：
+                %s
+
+                RAG 检索证据：
+                %s
+
+                请基于这些资料自然回答。不要输出 JSON，不要写“根据结构化查询”，不要把右侧证据区当成正文重复说明。
+                """.formatted(
+                request.message(),
+                describePlan(plan),
+                buildContextForPrompt(context),
+                buildRagForPrompt(ragHits)
+        )));
+        return messages;
+    }
+
+    private List<AssistantAiDtos.EvidenceItem> mergeEvidence(
+            List<AssistantAiDtos.EvidenceItem> localEvidence,
+            List<RagSearchHit> ragHits
+    ) {
+        List<AssistantAiDtos.EvidenceItem> evidence = new ArrayList<>();
+        if (localEvidence != null) {
+            evidence.addAll(localEvidence.stream().limit(5).toList());
+        }
+        if (ragHits != null) {
+            ragHits.stream().limit(6).forEach(hit -> evidence.add(new AssistantAiDtos.EvidenceItem(
+                    "rag:" + safe(hit.sourceType()).toLowerCase(Locale.ROOT),
+                    hit.title(),
+                    firstNonBlank(hit.summary(), truncateForReply(hit.content(), 140)),
+                    hit.sourceId(),
+                    hit.score(),
+                    hit.sourcePath()
+            )));
+        }
+        return evidence.stream().limit(10).toList();
+    }
+
+    private List<String> buildConversationalHighlights(List<String> localHighlights, List<RagSearchHit> ragHits) {
+        List<String> highlights = new ArrayList<>();
+        if (localHighlights != null) {
+            highlights.addAll(localHighlights.stream().limit(3).toList());
+        }
+        if (ragHits != null && !ragHits.isEmpty()) {
+            highlights.add("参考了 " + ragHits.size() + " 条 RAG 证据");
+        }
+        return highlights.stream()
+                .filter(StringUtils::hasText)
+                .distinct()
+                .limit(4)
+                .toList();
+    }
+
+    private String buildContextForPrompt(AssistantContext context) {
+        List<String> lines = new ArrayList<>();
+        lines.add("系统概况：物种档案 " + context.dashboardSummary().totalSpecies()
+                + " 条，观测记录 " + context.dashboardSummary().totalObservations()
+                + " 条，生态系统 " + context.dashboardSummary().totalEcosystems() + " 个。");
+        if (!context.species().isEmpty()) {
+            lines.add("相关物种：");
+            context.species().stream().limit(5).forEach(item -> lines.add("- "
+                    + firstNonBlank(item.chineseName(), item.scientificName(), "未命名物种")
+                    + "；学名：" + firstNonBlank(item.scientificName(), "未填写")
+                    + "；分类：" + firstNonBlank(item.classificationPath(), "未填写")
+                    + "；保护等级：" + firstNonBlank(item.protectionLevel(), "未标注")
+                    + "；IUCN：" + firstNonBlank(item.iucnStatus(), "未标注")
+                    + "；分布：" + firstNonBlank(item.geoRangeText(), item.distribution(), "未填写")
+                    + "；形态：" + truncateForPrompt(firstNonBlank(item.morphology(), item.description()), 220)
+                    + "；习性：" + truncateForPrompt(firstNonBlank(item.habit(), item.habitat()), 220)));
+        }
+        if (!context.observationViews().isEmpty()) {
+            lines.add("相关观测：");
+            context.observationViews().stream().limit(6).forEach(item -> lines.add("- "
+                    + firstNonBlank(item.locationName(), item.ecosystemName(), "未命名点位")
+                    + "；时间：" + formatDate(item.observedAt())
+                    + "；生态系统：" + firstNonBlank(item.ecosystemName(), "未标注")
+                    + "；观测人员：" + firstNonBlank(item.observerName(), "未标注")));
+        }
+        if (!context.ecosystemAnalytics().isEmpty()) {
+            lines.add("生态系统统计：" + context.ecosystemAnalytics().stream()
+                    .limit(5)
+                    .map(item -> item.ecosystemName() + " " + item.observationCount() + " 次观测/" + item.speciesCount() + " 种")
+                    .collect(Collectors.joining("；")));
+        }
+        if (!context.trendPoints().isEmpty()) {
+            lines.add("趋势：" + context.trendPoints().stream()
+                    .limit(8)
+                    .map(item -> item.month() + " 观测" + item.observationCount() + "次/物种" + item.speciesCount() + "种")
+                    .collect(Collectors.joining("；")));
+        }
+        return String.join("\n", lines);
+    }
+
+    private String buildRagForPrompt(List<RagSearchHit> ragHits) {
+        if (ragHits == null || ragHits.isEmpty()) {
+            return "未检索到强相关 RAG 证据。";
+        }
+        return ragHits.stream()
+                .limit(6)
+                .map(hit -> "- 来源：" + hit.sourceType()
+                        + "；标题：" + hit.title()
+                        + "；相似度：" + String.format(Locale.ROOT, "%.2f", hit.score())
+                        + "；摘要：" + truncateForPrompt(firstNonBlank(hit.summary(), hit.content()), 360))
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String describePlan(AssistantAiDtos.StructuredQuery plan) {
+        return "意图=" + safe(plan.intent())
+                + "；地点=" + firstNonBlank(plan.locationKeyword(), "无")
+                + "；生态系统=" + firstNonBlank(plan.ecosystemKeyword(), "无")
+                + "；物种=" + firstNonBlank(plan.speciesKeyword(), "无")
+                + "；保护等级=" + firstNonBlank(plan.protectionLevel(), "无")
+                + "；IUCN=" + firstNonBlank(plan.iucnStatus(), "无")
+                + "；时间=" + (plan.recentDays() != null ? "近" + plan.recentDays() + "天" : plan.yearsBack() != null ? "近" + plan.yearsBack() + "年" : "默认");
+    }
+
+    private String softenLocalAnswer(String answer) {
+        String softened = firstNonBlank(answer, "我这里暂时没有查到足够资料，不过可以继续换个关键词再试。");
+        softened = softened.replace("按当前筛选条件，", "我这里查到，");
+        softened = softened.replace("按当前高保护 / 高风险筛选条件，", "我这里按高保护和高风险条件查了一下，");
+        return softened;
+    }
+
+    private String normalizeAssistantAnswer(String answer) {
+        String cleaned = answer == null ? "" : answer.trim();
+        cleaned = cleaned.replaceFirst("^```(?:markdown|text)?\\s*", "").replaceFirst("\\s*```$", "").trim();
+        return firstNonBlank(cleaned, "我这里暂时没有组织出可靠回答，可以换个问法再试。");
+    }
+
+    private String truncateForPrompt(String value, int maxLength) {
+        String normalized = normalize(value);
+        if (normalized.length() <= maxLength) {
+            return normalized;
+        }
+        return normalized.substring(0, Math.max(0, maxLength - 1)) + "…";
+    }
+
+    private String normalizeRole(String role) {
+        String normalized = role == null ? "" : role.trim().toLowerCase(Locale.ROOT);
+        if ("assistant".equals(normalized) || "system".equals(normalized) || "user".equals(normalized)) {
+            return normalized;
+        }
+        return "user";
     }
 
     private String buildCacheKey(AssistantAiDtos.ChatRequest request) {

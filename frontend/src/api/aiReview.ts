@@ -9,6 +9,9 @@ export async function createAiReviewTicket(payload: {
   reasoning?: string
   candidates: AiIdentifyImageResponse['candidates']
   relatedSpeciesRecords: AiIdentifyImageResponse['relatedSpeciesRecords']
+  ragEvidence?: AiIdentifyImageResponse['ragEvidence']
+  ragConclusion?: string
+  conflictWarnings?: string[]
   submitNote?: string
 }, file: File) {
   const formData = new FormData()

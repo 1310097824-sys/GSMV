@@ -161,6 +161,17 @@
             </div>
           </div>
 
+          <div v-if="detail.ragEvidence?.length" class="review-detail__section">
+            <h3>RAG 证据快照</h3>
+            <div class="candidate-list">
+              <div v-for="item in detail.ragEvidence" :key="item.chunkId" class="candidate-item evidence-item">
+                <strong>{{ item.title }}</strong>
+                <span>{{ item.sourceName || item.sourceType }} · score {{ toPercent(item.score) }}</span>
+                <p>{{ item.summary || item.contentSnippet || '暂无摘要' }}</p>
+              </div>
+            </div>
+          </div>
+
           <div v-if="detail.status === 'RESOLVED' || detail.status === 'REJECTED'" class="review-result">
             <h3>{{ detail.status === 'REJECTED' ? '驳回结论' : '最终结论' }}</h3>
             <el-tag :type="detail.status === 'REJECTED' ? 'danger' : 'success'" effect="dark">

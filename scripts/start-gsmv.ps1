@@ -95,6 +95,47 @@ function ConvertTo-CmdSetValue {
   return $escaped
 }
 
+function Start-QdrantIfAvailable {
+  $docker = Get-Command docker.exe -ErrorAction SilentlyContinue
+  if (-not $docker) {
+    Write-Host 'Docker was not found. Qdrant will be skipped and RAG will fall back to MySQL vectors.'
+    return $false
+  }
+
+  $containerName = 'gsmv-qdrant'
+  try {
+    $existing = docker.exe ps -a --filter "name=^/${containerName}$" --format "{{.Names}}" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host 'Docker is installed but not ready. Qdrant will be skipped for this launch.'
+      return $false
+    }
+
+    if ($existing -contains $containerName) {
+      $running = docker.exe ps --filter "name=^/${containerName}$" --format "{{.Names}}" 2>$null
+      if ($running -contains $containerName) {
+        Write-Host 'Qdrant container is already running.'
+      } else {
+        Write-Host 'Starting existing Qdrant container.'
+        docker.exe start $containerName | Out-Null
+      }
+    } else {
+      Write-Host 'Creating Qdrant container gsmv-qdrant on port 6333.'
+      docker.exe run -d --name $containerName -p 6333:6333 -v "${containerName}_data:/qdrant/storage" qdrant/qdrant | Out-Null
+    }
+
+    $ready = Wait-HttpReady -Url 'http://localhost:6333/collections' -TimeoutSeconds 25
+    if ($ready) {
+      $containerName | Set-Content -Path (Join-Path $runDir 'qdrant.container') -Encoding ASCII
+      return $true
+    }
+    Write-Host 'Qdrant container started but is not ready yet. The app will still start and can fall back to MySQL vectors.'
+    return $false
+  } catch {
+    Write-Host "Qdrant startup skipped: $($_.Exception.Message)"
+    return $false
+  }
+}
+
 $backendPidPath = Join-Path $runDir 'backend.pid'
 $frontendPidPath = Join-Path $runDir 'frontend.pid'
 
@@ -102,6 +143,8 @@ Stop-ExistingProcessTree -Name 'backend' -PidPath $backendPidPath
 Stop-ExistingProcessTree -Name 'frontend' -PidPath $frontendPidPath
 Stop-ListenerByPort -Port 8080
 Stop-ListenerByPort -Port 5173
+
+$qdrantStarted = Start-QdrantIfAvailable
 
 $backendOut = Join-Path $logDir 'backend.out.log'
 $backendErr = Join-Path $logDir 'backend.err.log'
@@ -150,6 +193,9 @@ Write-Host ''
 Write-Host 'GSMV is starting.'
 Write-Host "Backend  PID: $($backend.Id)  URL: http://localhost:8080"
 Write-Host "Frontend PID: $($frontend.Id) URL: http://localhost:5173"
+if ($qdrantStarted) {
+  Write-Host 'Qdrant  URL: http://localhost:6333'
+}
 Write-Host "Logs: $logDir"
 Write-Host ''
 if ($backendReady -and $frontendReady) {

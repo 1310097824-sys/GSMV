@@ -1,6 +1,7 @@
 package com.gsmv.species;
 
 import com.gsmv.ai.AssistantQueryCache;
+import com.gsmv.ai.rag.RagKnowledgeService;
 import com.gsmv.audit.service.AuditService;
 import com.gsmv.common.ErrorCode;
 import com.gsmv.common.PageResponse;
@@ -49,6 +50,7 @@ public class SpeciesService {
     private final MediaFileService mediaFileService;
     private final AssistantQueryCache assistantQueryCache;
     private final EntityVersionService entityVersionService;
+    private final RagKnowledgeService ragKnowledgeService;
 
     public SpeciesService(
             SpeciesMapper speciesMapper,
@@ -56,7 +58,8 @@ public class SpeciesService {
             AuditService auditService,
             MediaFileService mediaFileService,
             AssistantQueryCache assistantQueryCache,
-            EntityVersionService entityVersionService
+            EntityVersionService entityVersionService,
+            RagKnowledgeService ragKnowledgeService
     ) {
         this.speciesMapper = speciesMapper;
         this.taxonMapper = taxonMapper;
@@ -64,6 +67,7 @@ public class SpeciesService {
         this.mediaFileService = mediaFileService;
         this.assistantQueryCache = assistantQueryCache;
         this.entityVersionService = entityVersionService;
+        this.ragKnowledgeService = ragKnowledgeService;
     }
 
     public PageResponse<SpeciesView> listSpecies(
@@ -152,6 +156,7 @@ public class SpeciesService {
                 null
         );
         assistantQueryCache.invalidateAll();
+        ragKnowledgeService.syncSpecies(species.getId());
         auditService.record(currentUserId, "SPECIES", "CREATE", "SPECIES", species.getId(), true,
                 "{\"scientificName\":\"" + escapeJson(request.scientificName()) + "\"}");
         return detailView;
@@ -180,6 +185,7 @@ public class SpeciesService {
                 null
         );
         assistantQueryCache.invalidateAll();
+        ragKnowledgeService.syncSpecies(id);
         auditService.record(currentUserId, "SPECIES", "UPDATE", "SPECIES", id, true,
                 "{\"scientificName\":\"" + escapeJson(request.scientificName()) + "\"}");
         return detailView;
@@ -208,6 +214,7 @@ public class SpeciesService {
                 null
         );
         assistantQueryCache.invalidateAll();
+        ragKnowledgeService.markSourceDeleted(RagKnowledgeService.SOURCE_SPECIES, id);
         auditService.record(currentUserId, "SPECIES", "DELETE", "SPECIES", id, true,
                 "{\"speciesId\":" + id + "}");
     }
@@ -265,6 +272,7 @@ public class SpeciesService {
                 versionId
         );
         assistantQueryCache.invalidateAll();
+        ragKnowledgeService.syncSpecies(id);
         auditService.record(currentUserId, "SPECIES", "ROLLBACK", "SPECIES", id, true,
                 "{\"versionId\":" + versionId + "}");
         return detailView;

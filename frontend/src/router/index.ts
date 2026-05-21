@@ -25,6 +25,7 @@ const routes = [
       { path: 'assistant', component: () => import('@/views/AiAssistantView.vue') },
       { path: 'ai-reviews', component: () => import('@/views/AiReviewTicketsView.vue'), meta: { authority: 'AI_REVIEW_READ' } },
       { path: 'ai-reports', component: () => import('@/views/AiReportsView.vue'), meta: { authority: 'REPORT_READ' } },
+      { path: 'rag-knowledge', component: () => import('@/views/RagKnowledgeView.vue'), meta: { authority: 'RAG_READ' } },
       { path: 'reports', component: () => import('@/views/ReportsView.vue'), meta: { authority: 'REPORT_READ' } },
       { path: 'audits', component: () => import('@/views/AuditView.vue'), meta: { authority: 'AUDIT_READ' } },
       { path: 'users', component: () => import('@/views/UsersView.vue'), meta: { authority: 'USER_ADMIN' } },

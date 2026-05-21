@@ -1,5 +1,6 @@
 package com.gsmv.ai.dto;
 
+import com.gsmv.ai.rag.dto.RagDtos;
 import jakarta.validation.constraints.NotBlank;
 import java.util.List;
 
@@ -34,7 +35,11 @@ public final class SpeciesAiDtos {
             String confidenceLabel,
             String reasoning,
             List<IdentificationCandidate> candidates,
-            List<RelatedSpeciesRecord> relatedSpeciesRecords
+            List<RelatedSpeciesRecord> relatedSpeciesRecords,
+            List<RagDtos.RagEvidenceItem> ragEvidence,
+            boolean confidenceAdjustedByRag,
+            String ragConclusion,
+            List<String> conflictWarnings
     ) {
     }
 

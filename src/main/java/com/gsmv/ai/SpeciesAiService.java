@@ -2,6 +2,8 @@ package com.gsmv.ai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.gsmv.ai.dto.SpeciesAiDtos;
+import com.gsmv.ai.rag.RagKnowledgeService;
+import com.gsmv.ai.rag.RagSearchHit;
 import com.gsmv.audit.service.AuditService;
 import com.gsmv.common.ErrorCode;
 import com.gsmv.common.PageResponse;
@@ -27,17 +29,20 @@ public class SpeciesAiService {
     private final AiModelGateway aiModelGateway;
     private final AiProperties aiProperties;
     private final SpeciesService speciesService;
+    private final RagKnowledgeService ragKnowledgeService;
     private final AuditService auditService;
 
     public SpeciesAiService(
             AiModelGateway aiModelGateway,
             AiProperties aiProperties,
             SpeciesService speciesService,
+            RagKnowledgeService ragKnowledgeService,
             AuditService auditService
     ) {
         this.aiModelGateway = aiModelGateway;
         this.aiProperties = aiProperties;
         this.speciesService = speciesService;
+        this.ragKnowledgeService = ragKnowledgeService;
         this.auditService = auditService;
     }
 
@@ -81,7 +86,7 @@ public class SpeciesAiService {
             double confidence = boundedConfidence(number(result, "confidence"));
             String reasoning = text(result, "reasoning");
             List<SpeciesAiDtos.IdentificationCandidate> candidates = parseCandidates(result.path("candidates"));
-            boolean needsHumanReview = confidence < aiProperties.lowConfidenceThreshold();
+            boolean modelNeedsHumanReview = confidence < aiProperties.lowConfidenceThreshold();
             List<String> keywords = new ArrayList<>();
             keywords.add(likelyChineseName);
             keywords.add(likelyScientificName);
@@ -90,6 +95,21 @@ public class SpeciesAiService {
                 keywords.add(candidate.scientificName());
             });
             List<SpeciesAiDtos.RelatedSpeciesRecord> relatedSpeciesRecords = searchRelatedSpecies(keywords.toArray(String[]::new));
+            String ragQuery = String.join(" ", keywords.stream().filter(StringUtils::hasText).toList());
+            List<com.gsmv.ai.rag.dto.RagDtos.RagEvidenceItem> ragEvidence = ragKnowledgeService.retrieveEvidenceForScenario(
+                    RagKnowledgeService.SCENARIO_IMAGE_IDENTIFICATION,
+                    firstNonBlank(ragQuery, reasoning, "marine species image identification"),
+                    5
+            );
+            boolean confidenceAdjustedByRag = !ragEvidence.isEmpty();
+            List<String> conflictWarnings = imageRagWarnings(confidence, ragEvidence, likelyChineseName, likelyScientificName);
+            double finalConfidence = confidenceAdjustedByRag && conflictWarnings.isEmpty()
+                    ? Math.min(1.0d, confidence + 0.05d)
+                    : confidence;
+            boolean needsHumanReview = modelNeedsHumanReview || finalConfidence < aiProperties.lowConfidenceThreshold() || !conflictWarnings.isEmpty();
+            String ragConclusion = ragEvidence.isEmpty()
+                    ? "No reliable RAG evidence was retrieved for this image result."
+                    : "RAG retrieved " + ragEvidence.size() + " evidence item(s) for candidate verification.";
 
             auditService.record(
                     SecurityUtils.requireCurrentUser().userId(),
@@ -104,12 +124,16 @@ public class SpeciesAiService {
             return new SpeciesAiDtos.IdentifyImageResponse(
                     likelyChineseName,
                     likelyScientificName,
-                    confidence,
+                    finalConfidence,
                     needsHumanReview,
                     needsHumanReview ? "建议人工复核" : "识别置信度较高",
                     reasoning,
                     candidates,
-                    relatedSpeciesRecords
+                    relatedSpeciesRecords,
+                    ragEvidence,
+                    confidenceAdjustedByRag,
+                    ragConclusion,
+                    conflictWarnings
             );
         } catch (IOException ex) {
             throw new BusinessException(ErrorCode.INTERNAL_ERROR, "读取识别图片失败", HttpStatus.INTERNAL_SERVER_ERROR);
@@ -138,6 +162,8 @@ public class SpeciesAiService {
                         栖息环境：%s
                         分布区域：%s
                         地理范围：%s
+                        RAG知识库参考：
+                        %s
 
                         请严格返回 JSON：
                         {
@@ -174,7 +200,8 @@ public class SpeciesAiService {
                         safe(request.habit()),
                         safe(request.habitat()),
                         safe(request.distribution()),
-                        safe(request.geoRangeText())
+                        safe(request.geoRangeText()),
+                        ragContext(firstNonBlank(request.chineseName(), request.scientificName(), request.description()))
                 ))
         ));
 
@@ -214,6 +241,8 @@ public class SpeciesAiService {
                         请润色字段“%s”的内容，使其更规范、简洁、适合物种档案使用。
                         原文：
                         %s
+                        RAG知识库参考：
+                        %s
 
                         请返回 JSON：
                         {
@@ -221,7 +250,7 @@ public class SpeciesAiService {
                           "summary": "",
                           "keywords": []
                         }
-                        """.formatted(request.fieldName(), request.text()))
+                        """.formatted(request.fieldName(), request.text(), ragContext(request.text())))
         ));
 
         auditService.record(SecurityUtils.requireCurrentUser().userId(), "AI", "POLISH_SPECIES_TEXT", "SPECIES", null, true,
@@ -250,6 +279,8 @@ public class SpeciesAiService {
                         栖息环境：%s
                         分布区域：%s
                         地理范围：%s
+                        RAG知识库参考：
+                        %s
 
                         请返回 JSON：
                         {
@@ -275,7 +306,8 @@ public class SpeciesAiService {
                         safe(request.habit()),
                         safe(request.habitat()),
                         safe(request.distribution()),
-                        safe(request.geoRangeText())
+                        safe(request.geoRangeText()),
+                        ragContext(firstNonBlank(request.chineseName(), request.scientificName(), request.description(), request.distribution()))
                 ))
         ));
 
@@ -347,9 +379,49 @@ public class SpeciesAiService {
         return new ArrayList<>(results.values());
     }
 
+    private List<String> imageRagWarnings(
+            double confidence,
+            List<com.gsmv.ai.rag.dto.RagDtos.RagEvidenceItem> evidence,
+            String likelyChineseName,
+            String likelyScientificName
+    ) {
+        List<String> warnings = new ArrayList<>();
+        if (evidence.isEmpty() && confidence < 0.78d) {
+            warnings.add("未检索到可靠RAG证据，建议人工复核");
+            return warnings;
+        }
+        if (!evidence.isEmpty()) {
+            String joined = evidence.stream()
+                    .map(item -> safe(item.title()) + " " + safe(item.summary()) + " " + safe(item.contentSnippet()))
+                    .toList()
+                    .toString()
+                    .toLowerCase();
+            boolean matchedChinese = StringUtils.hasText(likelyChineseName) && joined.contains(likelyChineseName.toLowerCase());
+            boolean matchedScientific = StringUtils.hasText(likelyScientificName) && joined.contains(likelyScientificName.toLowerCase());
+            if (!matchedChinese && !matchedScientific && confidence < 0.82d) {
+                warnings.add("识别候选与知识库证据匹配较弱，建议人工复核");
+            }
+        }
+        return warnings;
+    }
+
     private String text(JsonNode node, String field) {
         JsonNode fieldNode = node.path(field);
         return fieldNode.isMissingNode() || fieldNode.isNull() ? "" : fieldNode.asText("").trim();
+    }
+
+    private String ragContext(String query) {
+        if (!StringUtils.hasText(query)) {
+            return "无";
+        }
+        List<RagSearchHit> hits = ragKnowledgeService.retrieveForScenario(RagKnowledgeService.SCENARIO_SPECIES_PROFILE, query, 4);
+        if (hits.isEmpty()) {
+            return "无";
+        }
+        return hits.stream()
+                .map(hit -> hit.title() + "：" + firstNonBlank(hit.summary(), hit.content()))
+                .toList()
+                .toString();
     }
 
     private double number(JsonNode node, String field) {
@@ -380,6 +452,15 @@ public class SpeciesAiService {
 
     private String fallback(String preferred, String fallbackValue) {
         return StringUtils.hasText(preferred) ? preferred : safe(fallbackValue);
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                return value.trim();
+            }
+        }
+        return "";
     }
 
     private String safe(String value) {

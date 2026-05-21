@@ -3,9 +3,9 @@
     <section class="page-hero assistant-hero">
       <div class="page-hero__content">
         <span class="page-hero__eyebrow">Research Copilot</span>
-        <h2>把问题说成一句话，剩下的先交给系统里的数据。</h2>
+        <h2>像聊天一样提问，我会正常回答。</h2>
         <p>
-          AI 助手会优先解析本地物种、观测与生态系统数据，再组织成适合阅读的回答。适合快速问答、趋势摘要、地点检索与科研整理，也会把本次解析的结构化线索同步展示出来。
+          你可以直接问物种介绍、观测情况、生态系统变化或科研整理问题。我会先参考系统数据和 RAG 证据，再用自然语言把答案讲清楚。
         </p>
         <div class="page-hero__actions">
           <el-button type="primary" @click="applyPrompt(quickPrompts[0])">试一个示例问题</el-button>
@@ -16,12 +16,12 @@
       <div class="assistant-hero__window">
         <div class="assistant-hero__badge">
           <span>本地数据优先</span>
-          <strong>{{ lastResponse?.cacheHit ? '缓存命中，重复问题会更快' : '首次问题会实时生成结构化答案' }}</strong>
+          <strong>{{ lastResponse?.cacheHit ? '缓存命中，重复问题会更快' : '实时检索，再自然回答' }}</strong>
         </div>
         <div class="assistant-hero__feature-grid">
           <article class="assistant-hero__feature">
             <span>适合问</span>
-            <strong>地点、时间、保护等级与趋势</strong>
+            <strong>物种介绍、地点、时间、保护等级与趋势</strong>
           </article>
           <article class="assistant-hero__feature">
             <span>识别能力</span>
@@ -29,7 +29,7 @@
           </article>
           <article class="assistant-hero__feature">
             <span>回答方式</span>
-            <strong>结构化检索 + 可读摘要 + 证据线索</strong>
+            <strong>自然回答 + 数据证据 + 可继续追问</strong>
           </article>
         </div>
         <div class="assistant-hero__preview">
@@ -42,13 +42,13 @@
     <section class="assistant-story-grid">
       <article class="assistant-story-card">
         <span>它最擅长的事</span>
-        <strong>把零散记录整理成一句能直接用的结论</strong>
-        <p>像“最近三年湛江附近观测到哪些濒危物种”这类问题，会优先转成结构化检索，再返回摘要。</p>
+          <strong>把资料查出来，再像聊天一样讲明白</strong>
+          <p>你问“中华白海豚是什么”或“湛江附近有哪些濒危物种”，它会先找证据，再给你一段能读懂的回答。</p>
       </article>
       <article class="assistant-story-card">
         <span>提问建议</span>
         <strong>地点、时间、对象越清楚，结果越稳定</strong>
-        <p>把地名、时间范围、生态系统或保护等级一起说出来，回答通常会更具体，也更快命中缓存。</p>
+          <p>随便问也可以；如果带上地名、时间范围、生态系统或保护等级，答案会更具体。</p>
       </article>
       <article class="assistant-story-card">
         <span>当前状态</span>
@@ -62,8 +62,8 @@
         <template #header>
           <div class="assistant-header">
             <div>
-              <strong>对话区</strong>
-              <p>像和研究同伴协作一样提问，让系统先把数据检索出来，再帮你组织表述。</p>
+            <strong>对话区</strong>
+            <p>不用按系统字段提问，像平常聊天一样问就行。</p>
             </div>
             <span>{{ messages.length }} 条消息</span>
           </div>
@@ -82,12 +82,6 @@
             <div class="assistant-message__content">{{ item.content }}</div>
           </div>
 
-          <div v-if="loading" class="assistant-message assistant-message--assistant">
-            <div class="assistant-message__meta">
-              <span>AI 助手</span>
-            </div>
-            <div class="assistant-message__content">正在检索系统数据并整理回答，请稍等...</div>
-          </div>
         </div>
 
         <div class="assistant-composer">
@@ -96,7 +90,7 @@
             type="textarea"
             :rows="4"
             resize="none"
-            placeholder="例如：最近三年在湛江附近观测到的濒危物种有哪些？"
+            placeholder="例如：能不能介绍一下中华白海豚？"
             @keydown.ctrl.enter.prevent="sendMessage()"
           />
           <div class="assistant-composer__actions">
@@ -126,7 +120,7 @@
 
         <el-card class="panel-card" shadow="never">
           <template #header>
-            <strong>解析结果</strong>
+            <strong>参考线索</strong>
           </template>
           <template v-if="lastResponse">
             <div class="assistant-response-meta">
@@ -160,14 +154,22 @@
               <h3>证据线索</h3>
               <div v-if="lastResponse.evidence.length" class="evidence-list">
                 <div v-for="item in lastResponse.evidence" :key="`${item.type}-${item.title}`" class="evidence-item">
-                  <strong>{{ item.title || '数据线索' }}</strong>
+                  <div class="evidence-item__top">
+                    <strong>{{ item.title || '数据线索' }}</strong>
+                    <el-tag v-if="item.score !== undefined" effect="plain" round>
+                      RAG {{ formatScore(item.score) }}
+                    </el-tag>
+                  </div>
                   <span>{{ item.description || item.type || '-' }}</span>
+                  <RouterLink v-if="item.sourcePath" class="evidence-item__link" :to="item.sourcePath">
+                    打开证据来源
+                  </RouterLink>
                 </div>
               </div>
               <el-empty v-else description="这次回答没有返回额外证据线索" />
             </div>
           </template>
-          <el-empty v-else description="提问后这里会展示结构化查询与证据摘要" />
+          <el-empty v-else description="提问后这里会展示本次回答参考的线索和证据" />
         </el-card>
       </div>
     </div>
@@ -177,20 +179,20 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { askAiAssistant } from '@/api/ai'
+import { askAiAssistantStream } from '@/api/ai'
 import type { AiAssistantChatResponse, AiAssistantMessage } from '@/types/gsmv'
 
 const quickPrompts = [
+  '能不能介绍一下中华白海豚？',
   '最近三年在湛江附近观测到的濒危物种有哪些？',
-  '请总结红树林生态系统中物种数量的变化趋势。',
+  '红树林生态系统最近有什么变化？',
   '近 30 天谁的观测活动最活跃？',
-  '帮我概括当前系统里保护等级较高的物种分布特点。',
 ]
 
 const messages = ref<AiAssistantMessage[]>([
   {
     role: 'assistant',
-    content: '可以直接问我物种、观测、生态系统或趋势分析问题，我会先转成结构化查询，再结合系统数据给出回答。',
+    content: '你可以像平常聊天一样问我，比如“介绍一下中华白海豚”“湛江近海最近观测到了什么”。我会先查系统和知识库，再尽量用正常、好懂的话回答。',
   },
 ])
 const input = ref('')
@@ -222,6 +224,10 @@ const structuredQueryEntries = computed(() => {
 
 function applyPrompt(prompt: string) {
   input.value = prompt
+}
+
+function formatScore(value: number) {
+  return Number.isFinite(value) ? value.toFixed(2) : '0.00'
 }
 
 async function scrollMessagesToBottom(behavior: ScrollBehavior = 'smooth') {
@@ -260,19 +266,61 @@ async function sendMessage(prefilled?: string) {
 
   const history = messages.value.filter((item) => item.role === 'user' || item.role === 'assistant').slice(-6)
   messages.value.push({ role: 'user', content: message })
+  const assistantMessageIndex = messages.value.push({
+    role: 'assistant',
+    content: '正在查资料并组织回答...',
+  }) - 1
   input.value = ''
   loading.value = true
+  let answerStarted = false
 
   try {
-    const response = await askAiAssistant({ message, history })
-    lastResponse.value = response
-    messages.value.push({ role: 'assistant', content: response.answer })
+    await askAiAssistantStream({ message, history }, (event) => {
+      if (event.type === 'status') {
+        if (!answerStarted && event.content) {
+          updateAssistantMessage(assistantMessageIndex, event.content)
+        }
+        return
+      }
+
+      if (event.type === 'delta') {
+        if (!answerStarted) {
+          answerStarted = true
+          updateAssistantMessage(assistantMessageIndex, '')
+        }
+        appendAssistantMessage(assistantMessageIndex, event.content ?? '')
+        return
+      }
+
+      if (event.type === 'final' && event.response) {
+        lastResponse.value = event.response
+        updateAssistantMessage(assistantMessageIndex, event.response.answer)
+        return
+      }
+
+      if (event.type === 'error') {
+        throw new Error(event.content || '智能助手暂时不可用')
+      }
+    })
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '智能助手暂时不可用')
-    messages.value.push({ role: 'assistant', content: '这次回答失败了，请稍后再试，或者换一种问法。' })
+    updateAssistantMessage(assistantMessageIndex, '这次回答失败了，请稍后再试，或者换一种问法。')
   } finally {
     loading.value = false
   }
+}
+
+function updateAssistantMessage(index: number, content: string) {
+  messages.value[index] = {
+    role: 'assistant',
+    content,
+  }
+  void scrollMessagesToBottom('smooth')
+}
+
+function appendAssistantMessage(index: number, content: string) {
+  const current = messages.value[index]?.content ?? ''
+  updateAssistantMessage(index, `${current}${content}`)
 }
 </script>
 
@@ -652,6 +700,20 @@ async function sendMessage(prefilled?: string) {
 .evidence-item span {
   color: var(--gsmv-muted);
   line-height: 1.7;
+}
+
+.evidence-item__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.evidence-item__link {
+  width: fit-content;
+  color: #69eaff;
+  font-size: 13px;
+  text-decoration: none;
 }
 
 @media (max-width: 1180px) {

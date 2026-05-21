@@ -59,6 +59,18 @@ function Stop-ListenerByPort {
 if (Test-Path $runDir) {
   Stop-ProcessTreeByPidFile -Name 'backend' -PidPath (Join-Path $runDir 'backend.pid')
   Stop-ProcessTreeByPidFile -Name 'frontend' -PidPath (Join-Path $runDir 'frontend.pid')
+  $qdrantPath = Join-Path $runDir 'qdrant.container'
+  if (Test-Path $qdrantPath) {
+    $containerName = (Get-Content -Path $qdrantPath -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($containerName) {
+      $docker = Get-Command docker.exe -ErrorAction SilentlyContinue
+      if ($docker) {
+        Write-Host "Stopping Qdrant container: $containerName"
+        docker.exe stop $containerName | Out-Null
+      }
+    }
+    Remove-Item -Path $qdrantPath -Force -ErrorAction SilentlyContinue
+  }
 }
 
 Stop-ListenerByPort -Port 8080

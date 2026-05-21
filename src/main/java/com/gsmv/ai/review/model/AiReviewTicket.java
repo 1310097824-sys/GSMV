@@ -21,6 +21,9 @@ public class AiReviewTicket {
     private String reasoning;
     private String candidateJson;
     private String relatedSpeciesJson;
+    private String initialRecognitionJson;
+    private String ragEvidenceJson;
+    private String reviewEvidenceJson;
     private String submitNote;
     private Long finalSpeciesId;
     private String finalChineseName;
@@ -62,6 +65,12 @@ public class AiReviewTicket {
     public void setCandidateJson(String candidateJson) { this.candidateJson = candidateJson; }
     public String getRelatedSpeciesJson() { return relatedSpeciesJson; }
     public void setRelatedSpeciesJson(String relatedSpeciesJson) { this.relatedSpeciesJson = relatedSpeciesJson; }
+    public String getInitialRecognitionJson() { return initialRecognitionJson; }
+    public void setInitialRecognitionJson(String initialRecognitionJson) { this.initialRecognitionJson = initialRecognitionJson; }
+    public String getRagEvidenceJson() { return ragEvidenceJson; }
+    public void setRagEvidenceJson(String ragEvidenceJson) { this.ragEvidenceJson = ragEvidenceJson; }
+    public String getReviewEvidenceJson() { return reviewEvidenceJson; }
+    public void setReviewEvidenceJson(String reviewEvidenceJson) { this.reviewEvidenceJson = reviewEvidenceJson; }
     public String getSubmitNote() { return submitNote; }
     public void setSubmitNote(String submitNote) { this.submitNote = submitNote; }
     public Long getFinalSpeciesId() { return finalSpeciesId; }

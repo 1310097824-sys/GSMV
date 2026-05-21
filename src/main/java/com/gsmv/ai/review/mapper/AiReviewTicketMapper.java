@@ -16,10 +16,12 @@ public interface AiReviewTicketMapper {
     @Insert("""
             INSERT INTO ai_review_ticket (
               source_type, status, submitted_by, likely_chinese_name, likely_scientific_name,
-              confidence, needs_human_review, reasoning, candidate_json, related_species_json, submit_note
+              confidence, needs_human_review, reasoning, candidate_json, related_species_json,
+              initial_recognition_json, rag_evidence_json, review_evidence_json, submit_note
             ) VALUES (
               #{sourceType}, #{status}, #{submittedBy}, #{likelyChineseName}, #{likelyScientificName},
-              #{confidence}, #{needsHumanReview}, #{reasoning}, #{candidateJson}, #{relatedSpeciesJson}, #{submitNote}
+              #{confidence}, #{needsHumanReview}, #{reasoning}, #{candidateJson}, #{relatedSpeciesJson},
+              #{initialRecognitionJson}, #{ragEvidenceJson}, #{reviewEvidenceJson}, #{submitNote}
             )
             """)
     @Options(useGeneratedKeys = true, keyProperty = "id")

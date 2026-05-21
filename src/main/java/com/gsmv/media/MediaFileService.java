@@ -83,6 +83,52 @@ public class MediaFileService {
         }
     }
 
+    @Transactional
+    public MediaFile storeBytes(
+            String businessType,
+            Long businessId,
+            String originalFilename,
+            String contentType,
+            byte[] bytes,
+            Long uploadedBy
+    ) {
+        try {
+            byte[] safeBytes = bytes == null ? new byte[0] : bytes;
+            String safeFilename = originalFilename == null ? "unknown.bin" : originalFilename;
+            String extension = "";
+            int lastDot = safeFilename.lastIndexOf('.');
+            if (lastDot >= 0) {
+                extension = safeFilename.substring(lastDot);
+            }
+            String folder = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMM"));
+            Path root = Paths.get(storageProperties.uploadDir());
+            Path targetDir = root.resolve(businessType.toLowerCase()).resolve(folder);
+            if (businessId != null) {
+                targetDir = targetDir.resolve(String.valueOf(businessId));
+            }
+            Files.createDirectories(targetDir);
+
+            String storedFilename = UUID.randomUUID().toString().replace("-", "") + extension;
+            Path targetPath = targetDir.resolve(storedFilename);
+            Files.write(targetPath, safeBytes);
+
+            MediaFile mediaFile = new MediaFile();
+            mediaFile.setBusinessType(businessType);
+            mediaFile.setBusinessId(businessId);
+            mediaFile.setOriginalFilename(safeFilename);
+            mediaFile.setStoredFilename(storedFilename);
+            mediaFile.setContentType(contentType == null ? "application/octet-stream" : contentType);
+            mediaFile.setSizeBytes((long) safeBytes.length);
+            mediaFile.setStoragePath(targetPath.toString());
+            mediaFile.setSha256(sha256(safeBytes));
+            mediaFile.setUploadedBy(uploadedBy);
+            mediaFileMapper.insert(mediaFile);
+            return mediaFile;
+        } catch (IOException ex) {
+            throw new IllegalStateException("File save failed", ex);
+        }
+    }
+
     public MediaFile getRequired(Long id) {
         MediaFile mediaFile = mediaFileMapper.findById(id);
         if (mediaFile == null) {

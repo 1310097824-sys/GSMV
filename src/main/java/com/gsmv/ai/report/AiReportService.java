@@ -5,6 +5,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gsmv.ai.AiModelGateway;
+import com.gsmv.ai.rag.RagKnowledgeService;
+import com.gsmv.ai.rag.RagSearchHit;
 import com.gsmv.ai.report.dto.AiReportDtos;
 import com.gsmv.ai.report.export.AiReportPdfExporter;
 import com.gsmv.ai.report.mapper.AiReportMapper;
@@ -34,6 +36,7 @@ public class AiReportService {
     private final AiReportMapper aiReportMapper;
     private final ReportService reportService;
     private final AiModelGateway aiModelGateway;
+    private final RagKnowledgeService ragKnowledgeService;
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
 
@@ -41,12 +44,14 @@ public class AiReportService {
             AiReportMapper aiReportMapper,
             ReportService reportService,
             AiModelGateway aiModelGateway,
+            RagKnowledgeService ragKnowledgeService,
             AuditService auditService,
             ObjectMapper objectMapper
     ) {
         this.aiReportMapper = aiReportMapper;
         this.reportService = reportService;
         this.aiModelGateway = aiModelGateway;
+        this.ragKnowledgeService = ragKnowledgeService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
     }
@@ -69,6 +74,7 @@ public class AiReportService {
         report.setEvidenceJson(writeJson(generated.evidence()));
         report.setCreatedBy(currentUser.userId());
         aiReportMapper.insert(report);
+        ragKnowledgeService.syncAiReport(report.getId());
 
         auditService.record(currentUser.userId(), "AI", "GENERATE_RESEARCH_REPORT", "AI_RESEARCH_REPORT", report.getId(), true,
                 "{\"days\":" + days + ",\"reportType\":\"" + escapeJson(reportType) + "\"}");
@@ -103,7 +109,12 @@ public class AiReportService {
         List<NameValuePoint> observers = reportService.observationActivityByUser(days);
         List<EcosystemAnalyticsPoint> ecosystems = reportService.ecosystemAnalytics();
         List<NameValuePoint> protection = reportService.protectionLevelDistribution();
-        String context = buildContext(summary, trend, observers, ecosystems, protection);
+        List<RagSearchHit> ragHits = ragKnowledgeService.retrieveForScenario(
+                RagKnowledgeService.SCENARIO_REPORT,
+                "海洋生物多样性科研报告 " + reportType + " 近" + days + "天 重点发现 风险 建议",
+                6
+        );
+        String context = buildContext(summary, trend, observers, ecosystems, protection, ragHits);
 
         try {
             JsonNode node = aiModelGateway.deepSeekJson(List.of(
@@ -135,7 +146,7 @@ public class AiReportService {
                     nonEmptyList(node.path("highlights"), fallbackHighlights(summary, trend, ecosystems)),
                     nonEmptyList(node.path("risks"), fallbackRisks(summary, protection)),
                     nonEmptyList(node.path("recommendations"), fallbackRecommendations()),
-                    nonEmptyList(node.path("evidence"), fallbackEvidence(summary, days))
+                    nonEmptyList(node.path("evidence"), fallbackEvidence(summary, days, ragHits))
             );
             return generated;
         } catch (RuntimeException ignored) {
@@ -145,7 +156,7 @@ public class AiReportService {
                     fallbackHighlights(summary, trend, ecosystems),
                     fallbackRisks(summary, protection),
                     fallbackRecommendations(),
-                    fallbackEvidence(summary, days)
+                    fallbackEvidence(summary, days, ragHits)
             );
         }
     }
@@ -155,7 +166,8 @@ public class AiReportService {
             List<NameValuePoint> trend,
             List<NameValuePoint> observers,
             List<EcosystemAnalyticsPoint> ecosystems,
-            List<NameValuePoint> protection
+            List<NameValuePoint> protection,
+            List<RagSearchHit> ragHits
     ) {
         List<String> lines = new ArrayList<>();
         lines.add("物种总数=" + summary.totalSpecies() + "，观测记录=" + summary.totalObservations()
@@ -166,6 +178,11 @@ public class AiReportService {
         lines.add("生态系统=" + ecosystems.stream().limit(6)
                 .map(item -> item.ecosystemName() + "(" + item.observationCount() + "次观测/" + item.speciesCount() + "种)")
                 .toList());
+        if (!ragHits.isEmpty()) {
+            lines.add("RAG召回证据=" + ragHits.stream().limit(5)
+                    .map(item -> item.title() + "：" + item.summary())
+                    .toList());
+        }
         return String.join("\n", lines);
     }
 
@@ -213,13 +230,17 @@ public class AiReportService {
         );
     }
 
-    private List<String> fallbackEvidence(DashboardSummary summary, int days) {
-        return List.of(
+    private List<String> fallbackEvidence(DashboardSummary summary, int days, List<RagSearchHit> ragHits) {
+        List<String> evidence = new ArrayList<>(List.of(
                 "统计范围：近 " + days + " 天",
                 "物种档案总数：" + summary.totalSpecies(),
                 "观测记录总数：" + summary.totalObservations(),
                 "生态系统总数：" + summary.totalEcosystems()
-        );
+        ));
+        ragHits.stream().limit(4)
+                .map(item -> "RAG证据：" + item.title() + "（相似度 " + String.format(Locale.ROOT, "%.2f", item.score()) + "）")
+                .forEach(evidence::add);
+        return evidence;
     }
 
     private String fallbackSummary(DashboardSummary summary, int days) {

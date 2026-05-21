@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gsmv.ai.dto.SpeciesAiDtos;
+import com.gsmv.ai.rag.RagKnowledgeService;
+import com.gsmv.ai.rag.dto.RagDtos;
 import com.gsmv.ai.review.dto.AiReviewTicketDtos;
 import com.gsmv.ai.review.mapper.AiReviewTicketMapper;
 import com.gsmv.ai.review.model.AiReviewTicket;
@@ -41,6 +43,7 @@ public class AiReviewTicketService {
     private final AiReviewTicketMapper ticketMapper;
     private final MediaFileService mediaFileService;
     private final SpeciesService speciesService;
+    private final RagKnowledgeService ragKnowledgeService;
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
 
@@ -48,12 +51,14 @@ public class AiReviewTicketService {
             AiReviewTicketMapper ticketMapper,
             MediaFileService mediaFileService,
             SpeciesService speciesService,
+            RagKnowledgeService ragKnowledgeService,
             AuditService auditService,
             ObjectMapper objectMapper
     ) {
         this.ticketMapper = ticketMapper;
         this.mediaFileService = mediaFileService;
         this.speciesService = speciesService;
+        this.ragKnowledgeService = ragKnowledgeService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
     }
@@ -77,11 +82,15 @@ public class AiReviewTicketService {
         ticket.setReasoning(normalizeNullable(request.reasoning()));
         ticket.setCandidateJson(writeJson(defaultList(request.candidates())));
         ticket.setRelatedSpeciesJson(writeJson(defaultList(request.relatedSpeciesRecords())));
+        ticket.setInitialRecognitionJson(writeJson(request));
+        ticket.setRagEvidenceJson(writeJson(defaultList(request.ragEvidence())));
+        ticket.setReviewEvidenceJson(writeJson(List.of()));
         ticket.setSubmitNote(normalizeNullable(request.submitNote()));
         ticketMapper.insert(ticket);
 
         MediaFile image = mediaFileService.store(AI_REVIEW_IMAGE_BUSINESS_TYPE, ticket.getId(), file, currentUser.userId());
         ticketMapper.updateImageMediaId(ticket.getId(), image.getId());
+        ragKnowledgeService.syncAiReviewTicket(ticket.getId());
 
         auditService.record(
                 currentUser.userId(),
@@ -134,6 +143,7 @@ public class AiReviewTicketService {
             throw new BusinessException(ErrorCode.CONFLICT, "该工单已经完成复核", HttpStatus.CONFLICT);
         }
         ticketMapper.markInReview(id, currentUser.userId());
+        ragKnowledgeService.syncAiReviewTicket(id);
         auditService.record(currentUser.userId(), "AI", "START_REVIEW_TICKET", "AI_REVIEW_TICKET", id, true, "{}");
         return getTicket(id);
     }
@@ -177,6 +187,7 @@ public class AiReviewTicketService {
                 normalizeRequired(request.reviewNote()),
                 LocalDateTime.now()
         );
+        ragKnowledgeService.syncAiReviewTicket(id);
 
         auditService.record(
                 currentUser.userId(),
@@ -202,6 +213,7 @@ public class AiReviewTicketService {
             throw new BusinessException(ErrorCode.CONFLICT, "已完成的复核工单不能驳回", HttpStatus.CONFLICT);
         }
         ticketMapper.reject(id, currentUser.userId(), normalizeRequired(request.reviewNote()), LocalDateTime.now());
+        ragKnowledgeService.syncAiReviewTicket(id);
         auditService.record(currentUser.userId(), "AI", "REJECT_REVIEW_TICKET", "AI_REVIEW_TICKET", id, true, "{}");
         return getTicket(id);
     }
@@ -220,6 +232,7 @@ public class AiReviewTicketService {
             throw new BusinessException(ErrorCode.CONFLICT, "只有已驳回的复核工单可以重新提交", HttpStatus.CONFLICT);
         }
         ticketMapper.resubmit(id, normalizeNullable(request.submitNote()));
+        ragKnowledgeService.syncAiReviewTicket(id);
         auditService.record(currentUser.userId(), "AI", "RESUBMIT_REVIEW_TICKET", "AI_REVIEW_TICKET", id, true, "{}");
         return getTicket(id);
     }
@@ -318,6 +331,9 @@ public class AiReviewTicketService {
                 ticket.getReasoning(),
                 readCandidates(ticket.getCandidateJson()),
                 readRelatedSpecies(ticket.getRelatedSpeciesJson()),
+                readRagEvidence(ticket.getRagEvidenceJson()),
+                ticket.getInitialRecognitionJson(),
+                ticket.getReviewEvidenceJson(),
                 ticket.getSubmitNote(),
                 ticket.getFinalSpeciesId(),
                 ticket.getFinalChineseName(),
@@ -346,6 +362,17 @@ public class AiReviewTicketService {
         }
         try {
             return objectMapper.readValue(json, new TypeReference<List<SpeciesAiDtos.RelatedSpeciesRecord>>() { });
+        } catch (JsonProcessingException ex) {
+            return List.of();
+        }
+    }
+
+    private List<RagDtos.RagEvidenceItem> readRagEvidence(String json) {
+        if (!StringUtils.hasText(json)) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<List<RagDtos.RagEvidenceItem>>() { });
         } catch (JsonProcessingException ex) {
             return List.of();
         }

@@ -1,6 +1,7 @@
 package com.gsmv.ecosystem;
 
 import com.gsmv.ai.AssistantQueryCache;
+import com.gsmv.ai.rag.RagKnowledgeService;
 import com.gsmv.audit.service.AuditService;
 import com.gsmv.common.ErrorCode;
 import com.gsmv.common.PageResponse;
@@ -21,15 +22,18 @@ public class EcosystemService {
     private final EcosystemMapper ecosystemMapper;
     private final AuditService auditService;
     private final AssistantQueryCache assistantQueryCache;
+    private final RagKnowledgeService ragKnowledgeService;
 
     public EcosystemService(
             EcosystemMapper ecosystemMapper,
             AuditService auditService,
-            AssistantQueryCache assistantQueryCache
+            AssistantQueryCache assistantQueryCache,
+            RagKnowledgeService ragKnowledgeService
     ) {
         this.ecosystemMapper = ecosystemMapper;
         this.auditService = auditService;
         this.assistantQueryCache = assistantQueryCache;
+        this.ragKnowledgeService = ragKnowledgeService;
     }
 
     public PageResponse<Ecosystem> list(String keyword, String type, int page, int size) {
@@ -52,6 +56,7 @@ public class EcosystemService {
         Ecosystem ecosystem = toEntity(request);
         ecosystemMapper.insert(ecosystem);
         assistantQueryCache.invalidateAll();
+        ragKnowledgeService.syncEcosystem(ecosystem.getId());
         auditService.record(SecurityUtils.requireCurrentUser().userId(), "ECOSYSTEM", "CREATE", "ECOSYSTEM", ecosystem.getId(), true,
                 "{\"name\":\"" + request.name().trim() + "\"}");
         return ecosystemMapper.findById(ecosystem.getId());
@@ -66,6 +71,7 @@ public class EcosystemService {
         applyValues(existing, request);
         ecosystemMapper.update(existing);
         assistantQueryCache.invalidateAll();
+        ragKnowledgeService.syncEcosystem(id);
         auditService.record(SecurityUtils.requireCurrentUser().userId(), "ECOSYSTEM", "UPDATE", "ECOSYSTEM", id, true,
                 "{\"name\":\"" + request.name().trim() + "\"}");
         return ecosystemMapper.findById(id);
@@ -82,6 +88,7 @@ public class EcosystemService {
         }
         ecosystemMapper.deleteById(id);
         assistantQueryCache.invalidateAll();
+        ragKnowledgeService.markSourceDeleted(RagKnowledgeService.SOURCE_ECOSYSTEM, id);
         auditService.record(SecurityUtils.requireCurrentUser().userId(), "ECOSYSTEM", "DELETE", "ECOSYSTEM", id, true,
                 "{\"name\":\"" + existing.getName() + "\"}");
     }

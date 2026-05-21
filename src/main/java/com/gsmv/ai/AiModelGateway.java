@@ -80,6 +80,75 @@ public class AiModelGateway {
         ));
     }
 
+    public List<List<Double>> embedTexts(List<String> texts) {
+        AiProperties.Bailian config = properties.bailian();
+        requireConfigured(config.enabled(), config.apiKey(), "阿里云百炼 Embedding");
+        if (texts == null || texts.isEmpty()) {
+            return List.of();
+        }
+        if (texts.size() > 10) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "Embedding 每批最多支持 10 段文本", HttpStatus.BAD_REQUEST);
+        }
+
+        String model = StringUtils.hasText(config.embeddingModel()) ? config.embeddingModel() : "text-embedding-v4";
+        Integer dimension = config.embeddingDimension() == null ? 1024 : config.embeddingDimension();
+        Map<String, Object> requestBody = Map.of(
+                "model", model,
+                "input", texts,
+                "dimensions", dimension
+        );
+
+        RestClient client = restClientBuilder
+                .baseUrl(config.baseUrl())
+                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + config.apiKey())
+                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                .build();
+
+        for (int attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+            try {
+                String responseBody = client.post()
+                        .uri("/embeddings")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(requestBody)
+                        .retrieve()
+                        .body(String.class);
+                JsonNode response = objectMapper.readTree(responseBody);
+                List<List<Double>> embeddings = new ArrayList<>();
+                for (JsonNode item : response.path("data")) {
+                    List<Double> vector = new ArrayList<>();
+                    for (JsonNode value : item.path("embedding")) {
+                        vector.add(value.asDouble());
+                    }
+                    embeddings.add(vector);
+                }
+                if (embeddings.size() != texts.size()) {
+                    throw new BusinessException(ErrorCode.INTERNAL_ERROR, "Embedding 返回数量与输入不一致", HttpStatus.BAD_GATEWAY);
+                }
+                return embeddings;
+            } catch (RestClientResponseException ex) {
+                if (attempt < MAX_RETRY_ATTEMPTS && shouldRetry(ex)) {
+                    sleepQuietly(350L * attempt);
+                    continue;
+                }
+                throw new BusinessException(
+                        ErrorCode.INTERNAL_ERROR,
+                        "Embedding 服务调用失败: " + readableErrorMessage(ex),
+                        HttpStatus.BAD_GATEWAY
+                );
+            } catch (BusinessException ex) {
+                throw ex;
+            } catch (Exception ex) {
+                if (attempt < MAX_RETRY_ATTEMPTS) {
+                    sleepQuietly(350L * attempt);
+                    continue;
+                }
+                throw new BusinessException(ErrorCode.INTERNAL_ERROR, "Embedding 服务调用失败: " + ex.getMessage(), HttpStatus.BAD_GATEWAY);
+            }
+        }
+
+        throw new BusinessException(ErrorCode.INTERNAL_ERROR, "Embedding 服务调用失败，请稍后重试", HttpStatus.BAD_GATEWAY);
+    }
+
     public JsonNode bailianVisionJson(String systemPrompt, String userPrompt, byte[] imageBytes, String contentType) {
         AiProperties.Bailian config = properties.bailian();
         requireConfigured(config.enabled(), config.apiKey(), "阿里云百炼");
