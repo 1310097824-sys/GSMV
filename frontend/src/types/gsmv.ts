@@ -401,12 +401,22 @@ export interface AiAssistantMessage {
   content: string
 }
 
+export interface AiAssistantHistoryItem extends AiAssistantMessage {
+  id: number
+  createdAt: string
+}
+
 export interface AiAssistantChatResponse {
   answer: string
   structuredQuery: AiAssistantStructuredQuery
   highlights: string[]
   evidence: AiAssistantEvidenceItem[]
   cacheHit: boolean
+}
+
+export interface AiAssistantHistoryResponse {
+  messages: AiAssistantHistoryItem[]
+  lastResponse?: AiAssistantChatResponse
 }
 
 export interface AiAssistantStreamEvent {

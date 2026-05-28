@@ -2,6 +2,7 @@ package com.gsmv.ai.rag;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gsmv.ai.AiModelGateway;
 import com.gsmv.ai.AssistantQueryCache;
@@ -51,11 +52,14 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.springframework.web.client.RestClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+import org.springframework.web.util.HtmlUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 @Service
@@ -219,6 +223,7 @@ public class RagKnowledgeService {
     @Transactional
     public void deleteDocument(Long id) {
         RagDocument document = requireDocument(id);
+        qdrantVectorClient.deleteByDocumentId(id);
         documentMapper.markDeleted(id);
         chunkMapper.markDeletedByDocumentId(id);
         auditService.record(SecurityUtils.requireCurrentUser().userId(), "AI", "DELETE_RAG_DOCUMENT", "RAG_DOCUMENT", id, true,
@@ -230,6 +235,9 @@ public class RagKnowledgeService {
     public RagDtos.RagIndexJobView rebuildAll() {
         CurrentUser currentUser = SecurityUtils.requireCurrentUser();
         RagIndexJob job = newJob("FULL_REBUILD", null, null, currentUser.userId());
+        qdrantVectorClient.recreateCollection();
+        removeReviewTicketsFromRag();
+        assistantQueryCache.invalidateAll();
         int totalDocs = 0;
         int totalChunks = 0;
         int success = 0;
@@ -260,14 +268,14 @@ public class RagKnowledgeService {
             totalChunks += outcome.chunkCount();
             if (outcome.success()) success++; else { failed++; lastError = outcome.message(); }
         }
-        for (AiReviewTicket ticket : aiReviewTicketMapper.findPage(null, null, null, 5000, 0)) {
-            IndexOutcome outcome = indexSystemSource(SOURCE_AI_REVIEW, ticket.getId(), buildReviewTitle(ticket), buildReviewText(ticket), false);
+        for (RagDocument upload : documentMapper.findUploadedDocuments(5000)) {
+            IndexOutcome outcome = reindexUploaded(upload);
             totalDocs++;
             totalChunks += outcome.chunkCount();
             if (outcome.success()) success++; else { failed++; lastError = outcome.message(); }
         }
-        for (RagDocument upload : documentMapper.findUploadedDocuments(5000)) {
-            IndexOutcome outcome = reindexUploaded(upload);
+        for (RagDocument external : documentMapper.findExternalDocuments(5000)) {
+            IndexOutcome outcome = reindexExternal(external);
             totalDocs++;
             totalChunks += outcome.chunkCount();
             if (outcome.success()) success++; else { failed++; lastError = outcome.message(); }
@@ -327,7 +335,7 @@ public class RagKnowledgeService {
 
     @Transactional
     public RagDtos.QdrantStatusView rebuildQdrant() {
-        qdrantVectorClient.ensureCollection();
+        qdrantVectorClient.recreateCollection();
         long total = chunkMapper.countReady();
         int pageSize = 200;
         for (int offset = 0; offset < total; offset += pageSize) {
@@ -420,6 +428,8 @@ public class RagKnowledgeService {
                     failed.getSourceUrl(), failed.getLocalPath(), failed.getTitle());
             if (StringUtils.hasText(failed.getLocalPath())) {
                 processLocalPathItem(retry, item, Path.of(failed.getLocalPath()), currentUser.userId());
+            } else if (isExternalIngestItem(failed) && StringUtils.hasText(failed.getSourceUrl())) {
+                processExternalRetryItem(retry, item);
             } else {
                 markIngestItemFailed(retry, item, "Retry needs a local path or external refetch is not available for this item");
             }
@@ -570,14 +580,8 @@ public class RagKnowledgeService {
     }
 
     public void syncAiReviewTicket(Long id) {
-        try {
-            AiReviewTicket ticket = aiReviewTicketMapper.findById(id);
-            if (ticket == null) {
-                markSourceDeleted(SOURCE_AI_REVIEW, id);
-                return;
-            }
-            indexSystemSource(SOURCE_AI_REVIEW, id, buildReviewTitle(ticket), buildReviewText(ticket), true);
-        } catch (RuntimeException ignored) {
+        if (id != null) {
+            markSourceDeleted(SOURCE_AI_REVIEW, id);
         }
     }
 
@@ -586,6 +590,17 @@ public class RagKnowledgeService {
         if (document != null) {
             documentMapper.markDeleted(document.getId());
             chunkMapper.markDeletedByDocumentId(document.getId());
+        }
+    }
+
+    private void removeReviewTicketsFromRag() {
+        for (RagDocument document : documentMapper.findActiveBySourceType(SOURCE_AI_REVIEW, 5000)) {
+            qdrantVectorClient.deleteByDocumentId(document.getId());
+            documentMapper.markDeleted(document.getId());
+            chunkMapper.markDeletedByDocumentId(document.getId());
+        }
+        for (AiReviewTicket ticket : aiReviewTicketMapper.findPage(null, null, null, 5000, 0)) {
+            markSourceDeleted(SOURCE_AI_REVIEW, ticket.getId());
         }
     }
 
@@ -636,6 +651,29 @@ public class RagKnowledgeService {
             MediaFile mediaFile = mediaFileService.getRequired(document.getMediaId());
             String text = textExtractor.extract(mediaFileService.readBytes(mediaFile), mediaFile.getOriginalFilename(), mediaFile.getContentType());
             int chunks = indexDocumentContent(document, document.getTitle(), text, true);
+            return new IndexOutcome(true, chunks, null);
+        } catch (RuntimeException ex) {
+            markFailed(document, readableError(ex));
+            return new IndexOutcome(false, 0, readableError(ex));
+        }
+    }
+
+    private IndexOutcome reindexExternal(RagDocument document) {
+        try {
+            List<RagChunk> existingChunks = chunkMapper.findByDocumentId(document.getId());
+            if (existingChunks.isEmpty()) {
+                throw new IllegalStateException("外部导入文档缺少可重建内容");
+            }
+            StringBuilder text = new StringBuilder();
+            for (RagChunk chunk : existingChunks) {
+                if (StringUtils.hasText(chunk.getContent())) {
+                    if (!text.isEmpty()) {
+                        text.append("\n\n");
+                    }
+                    text.append(chunk.getContent());
+                }
+            }
+            int chunks = indexDocumentContent(document, document.getTitle(), text.toString(), false);
             return new IndexOutcome(true, chunks, null);
         } catch (RuntimeException ex) {
             markFailed(document, readableError(ex));
@@ -789,7 +827,11 @@ public class RagKnowledgeService {
         try {
             if (StringUtils.hasText(record.externalId())
                     && ingestItemMapper.countSuccessfulExternal(record.sourceCode(), record.externalId()) > 0) {
-                markIngestItemFailed(job, item, "Duplicate external record skipped: " + record.externalId());
+                item.setMetadataJson(writeJson(Map.of(
+                        "duplicateExternalId", record.externalId(),
+                        "sourceUrl", safe(record.sourceUrl())
+                )));
+                markIngestItemSuccess(job, item);
                 return;
             }
             RagDocument document = new RagDocument();
@@ -815,6 +857,48 @@ public class RagKnowledgeService {
         } catch (RuntimeException ex) {
             markIngestItemFailed(job, item, readableError(ex));
         }
+    }
+
+    private void processExternalRetryItem(RagIngestJob job, RagIngestItem item) {
+        try {
+            processExternalRecordItem(job, item, refetchExternalRecord(item));
+        } catch (RuntimeException ex) {
+            markIngestItemFailed(job, item, readableError(ex));
+        }
+    }
+
+    private ExternalRecord refetchExternalRecord(RagIngestItem item) {
+        String sourceCode = firstNonBlank(item.getSourceCode(), item.getSourceType(), "EXTERNAL").toUpperCase(Locale.ROOT);
+        String sourceUrl = normalizeRequired(item.getSourceUrl());
+        String externalId = firstNonBlank(item.getExternalId(), sourceCode + "-" + Integer.toHexString(sourceUrl.hashCode()));
+        String title = firstNonBlank(item.getTitle(), sourceCode + " " + externalId);
+        String content;
+        if ("WEB_PDF".equals(sourceCode)) {
+            content = fetchWebText(sourceUrl);
+        } else if ("OBIS".equals(sourceCode) || "GBIF".equals(sourceCode) || "WORMS".equals(sourceCode)) {
+            ExternalQuery query = resolveExternalQuery(firstNonBlank(item.getTitle(), item.getExternalId(), sourceCode));
+            List<ExternalRecord> records = collectExternalJson(sourceCode, sourceUrl, query, 10);
+            if (records.isEmpty()) {
+                throw new IllegalStateException(sourceCode + " retry returned no structured records");
+            }
+            return records.get(0);
+        } else {
+            String body = restClientBuilder.build()
+                    .get()
+                    .uri(URI.create(sourceUrl))
+                    .retrieve()
+                    .body(String.class);
+            content = "Source: " + sourceCode + "\nURL: " + sourceUrl + "\nRaw summary:\n" + truncate(body, 24000);
+        }
+        return new ExternalRecord(sourceCode, externalId, title, content, sourceUrl);
+    }
+
+    private boolean isExternalIngestItem(RagIngestItem item) {
+        return safe(item.getSourceType()).startsWith("EXTERNAL") || safe(item.getSourceCode()).startsWith("OBIS")
+                || "GBIF".equalsIgnoreCase(item.getSourceCode())
+                || "WORMS".equalsIgnoreCase(item.getSourceCode())
+                || "IUCN".equalsIgnoreCase(item.getSourceCode())
+                || "WEB_PDF".equalsIgnoreCase(item.getSourceCode());
     }
 
     private RagDocument createDocumentFromMedia(MediaFile mediaFile, String sourceType, Long sourceId, Long userId, Map<String, Object> metadata) {
@@ -1157,9 +1241,6 @@ public class RagKnowledgeService {
         if (SOURCE_AI_REPORT.equals(chunk.getSourceType())) {
             return "/ai-reports?focus=" + chunk.getSourceId();
         }
-        if (SOURCE_AI_REVIEW.equals(chunk.getSourceType())) {
-            return "/ai-reviews?focus=" + chunk.getSourceId();
-        }
         return "/rag-knowledge?document=" + chunk.getDocumentId();
     }
 
@@ -1169,7 +1250,6 @@ public class RagKnowledgeService {
             case SOURCE_OBSERVATION -> "Observation record";
             case SOURCE_ECOSYSTEM -> "Ecosystem";
             case SOURCE_AI_REPORT -> "AI research report";
-            case SOURCE_AI_REVIEW -> "AI review ticket";
             case SOURCE_UPLOAD -> "Uploaded document";
             default -> sourceType != null && sourceType.startsWith("EXTERNAL_") ? sourceType.substring("EXTERNAL_".length()) : "Knowledge base";
         };
@@ -1179,7 +1259,6 @@ public class RagKnowledgeService {
         return switch (sourceType) {
             case SOURCE_SPECIES, SOURCE_OBSERVATION, SOURCE_ECOSYSTEM, SOURCE_AI_REPORT -> 1.0d;
             case SOURCE_UPLOAD -> 0.92d;
-            case SOURCE_AI_REVIEW -> 0.82d;
             default -> 0.75d;
         };
     }
@@ -1226,32 +1305,675 @@ public class RagKnowledgeService {
         if ("WEB_PDF".equals(sourceCode)) {
             return collectWebDocuments(urls, limit);
         }
-        String safeQuery = StringUtils.hasText(query) ? query : "marine biodiversity";
-        String encoded = URLEncoder.encode(safeQuery, StandardCharsets.UTF_8);
+        ExternalQuery externalQuery = resolveExternalQuery(query);
+        String encoded = URLEncoder.encode(externalQuery.lookupQuery(), StandardCharsets.UTF_8);
         return switch (sourceCode) {
-            case "OBIS" -> collectExternalJson(sourceCode, "https://api.obis.org/v3/occurrence?scientificname=" + encoded + "&size=" + limit, safeQuery);
-            case "GBIF" -> collectExternalJson(sourceCode, "https://api.gbif.org/v1/occurrence/search?scientificName=" + encoded + "&limit=" + limit, safeQuery);
-            case "WORMS" -> collectExternalJson(sourceCode, "https://www.marinespecies.org/rest/AphiaRecordsByName/" + encoded + "?like=true&marine_only=true", safeQuery);
-            case "IUCN" -> List.of(new ExternalRecord(sourceCode, "IUCN-" + safeQuery, "IUCN query: " + safeQuery,
-                    "IUCN Red List import needs an API token. Add official export/PDF via WEB_PDF or configure a collector token later.",
-                    "https://api.iucnredlist.org"));
+            case "OBIS" -> collectExternalJson(sourceCode, "https://api.obis.org/v3/occurrence?scientificname=" + encoded + "&size=" + limit, externalQuery, limit);
+            case "GBIF" -> collectExternalJson(sourceCode, "https://api.gbif.org/v1/occurrence/search?scientificName=" + encoded + "&limit=" + limit, externalQuery, limit);
+            case "WORMS" -> collectExternalJson(sourceCode, "https://www.marinespecies.org/rest/AphiaRecordsByName/" + encoded + "?like=true&marine_only=true", externalQuery, limit);
+            case "IUCN" -> collectIucnRecords(externalQuery, limit);
             default -> throw new IllegalArgumentException("Unsupported external source: " + sourceCode);
         };
     }
 
-    private List<ExternalRecord> collectExternalJson(String sourceCode, String url, String query) {
+    private List<ExternalRecord> collectIucnRecords(ExternalQuery query, int limit) {
+        String apiToken = ragProperties.iucn() == null ? "" : ragProperties.iucn().apiToken();
+        if (!StringUtils.hasText(apiToken)) {
+            throw new IllegalStateException("IUCN_API_TOKEN 未配置，无法导入 IUCN Red List API 数据");
+        }
+
+        String scientificName = firstNonBlank(query.scientificName(), query.lookupQuery());
+        String[] nameParts = scientificName.trim().split("\\s+");
+        if (nameParts.length < 2 || containsCjk(scientificName)) {
+            throw new IllegalStateException("IUCN 导入需要物种学名，例如 Sousa chinensis。当前查询：" + query.originalQuery());
+        }
+
+        String genusName = nameParts[0];
+        String speciesName = nameParts[1];
+        JsonNode taxaResponse = readIucnJson(
+                "/taxa/scientific_name?genus_name=" + encodeUrl(genusName) + "&species_name=" + encodeUrl(speciesName),
+                apiToken
+        );
+        JsonNode assessments = taxaResponse.path("assessments");
+        if (!assessments.isArray() || assessments.isEmpty()) {
+            throw new IllegalStateException("IUCN 未找到评估记录：" + scientificName);
+        }
+
+        List<JsonNode> selectedAssessments = new ArrayList<>();
+        for (JsonNode assessment : assessments) {
+            if (assessment.path("latest").asBoolean(false)) {
+                selectedAssessments.add(assessment);
+            }
+        }
+        for (JsonNode assessment : assessments) {
+            if (selectedAssessments.size() >= Math.max(1, limit)) {
+                break;
+            }
+            if (!assessment.path("latest").asBoolean(false)) {
+                selectedAssessments.add(assessment);
+            }
+        }
+
+        List<ExternalRecord> records = new ArrayList<>();
+        for (JsonNode assessmentSummary : selectedAssessments.stream().limit(Math.max(1, limit)).toList()) {
+            long assessmentId = assessmentSummary.path("assessment_id").asLong(0L);
+            if (assessmentId <= 0L) {
+                continue;
+            }
+            JsonNode assessmentDetail = readIucnJson("/assessment/" + assessmentId, apiToken);
+            records.add(new ExternalRecord(
+                    "IUCN",
+                    "IUCN-" + assessmentId,
+                    buildIucnTitle(query, assessmentSummary, assessmentDetail),
+                    buildIucnContent(query, assessmentSummary, assessmentDetail),
+                    firstNonBlank(textAt(assessmentDetail, "url"), textAt(assessmentSummary, "url"), "https://www.iucnredlist.org")
+            ));
+        }
+        if (records.isEmpty()) {
+            throw new IllegalStateException("IUCN 返回了评估列表，但没有可导入的 assessment_id：" + scientificName);
+        }
+        return records;
+    }
+
+    private JsonNode readIucnJson(String pathAndQuery, String apiToken) {
+        String baseUrl = firstNonBlank(ragProperties.iucn() == null ? null : ragProperties.iucn().baseUrl(), "https://api.iucnredlist.org/api/v4")
+                .replaceAll("/+$", "");
         try {
             String body = restClientBuilder.build()
+                    .get()
+                    .uri(URI.create(baseUrl + pathAndQuery))
+                    .header("Authorization", "Bearer " + apiToken)
+                    .header("Accept", "application/json")
+                    .retrieve()
+                    .body(String.class);
+            return objectMapper.readTree(body);
+        } catch (RuntimeException | JsonProcessingException ex) {
+            throw new IllegalStateException("IUCN collection failed: " + readableError(ex), ex);
+        }
+    }
+
+    private String buildIucnTitle(ExternalQuery query, JsonNode summary, JsonNode detail) {
+        String categoryCode = firstNonBlank(
+                textAt(detail, "red_list_category", "code"),
+                textAt(summary, "red_list_category_code")
+        );
+        String year = firstNonBlank(textAt(detail, "year_published"), textAt(summary, "year_published"));
+        return "IUCN Red List: " + query.displayName()
+                + nullableSuffix("等级", categoryCode)
+                + nullableSuffix("年份", year);
+    }
+
+    private String buildIucnContent(ExternalQuery query, JsonNode summary, JsonNode detail) {
+        String categoryCode = firstNonBlank(textAt(detail, "red_list_category", "code"), textAt(summary, "red_list_category_code"));
+        String categoryName = textAt(detail, "red_list_category", "description", "en");
+        String populationTrend = textAt(detail, "population_trend", "description", "en");
+        String scientificName = firstNonBlank(textAt(detail, "taxon", "scientific_name"), query.scientificName(), query.lookupQuery());
+        String commonNames = joinJsonValues(detail.path("taxon").path("common_names"), 8, "name");
+        String locations = joinJsonValues(detail.path("locations"), 30, "description", "en");
+        String systems = joinJsonValues(detail.path("systems"), 10, "description", "en");
+        String habitats = joinJsonValues(detail.path("habitats"), 20, "description", "en");
+        String threats = joinJsonValues(detail.path("threats"), 24, "description", "en");
+        String conservationActions = joinJsonValues(detail.path("conservation_actions"), 24, "description", "en");
+        String references = joinJsonValues(detail.path("references"), 8, "citation_short");
+        if (!StringUtils.hasText(references)) {
+            references = joinJsonValues(detail.path("references"), 5, "citation");
+        }
+
+        return String.join("\n", List.of(
+                "Source: IUCN Red List API",
+                externalQueryContext(query),
+                "Assessment ID: " + textAt(detail, "assessment_id"),
+                "SIS taxon ID: " + textAt(detail, "sis_taxon_id"),
+                "Scientific name: " + scientificName,
+                "Common names: " + firstNonBlank(commonNames, "N/A"),
+                "Red List category: " + firstNonBlank(categoryCode, "N/A") + nullableSuffix("说明", categoryName),
+                "Criteria: " + firstNonBlank(textAt(detail, "criteria"), "N/A"),
+                "Published year: " + firstNonBlank(textAt(detail, "year_published"), textAt(summary, "year_published"), "N/A"),
+                "Assessment date: " + firstNonBlank(textAt(detail, "assessment_date"), "N/A"),
+                "Latest assessment: " + detail.path("latest").asBoolean(summary.path("latest").asBoolean(false)),
+                "Population trend: " + firstNonBlank(populationTrend, "N/A"),
+                "Systems: " + firstNonBlank(systems, "N/A"),
+                "Countries/locations: " + firstNonBlank(locations, "N/A"),
+                "Structured habitats: " + firstNonBlank(habitats, "N/A"),
+                "Structured threats: " + firstNonBlank(threats, "N/A"),
+                "Conservation actions: " + firstNonBlank(conservationActions, "N/A"),
+                "Range: " + truncate(cleanIucnText(textAt(detail, "documentation", "range")), 5000),
+                "Population: " + truncate(cleanIucnText(textAt(detail, "documentation", "population")), 5000),
+                "Habitat and ecology: " + truncate(cleanIucnText(textAt(detail, "documentation", "habitats")), 5000),
+                "Major threats: " + truncate(cleanIucnText(textAt(detail, "documentation", "threats")), 5000),
+                "Conservation measures: " + truncate(cleanIucnText(textAt(detail, "documentation", "measures")), 5000),
+                "Rationale: " + truncate(cleanIucnText(textAt(detail, "documentation", "rationale")), 5000),
+                "Citation: " + firstNonBlank(cleanIucnText(textAt(detail, "citation")), "IUCN Red List of Threatened Species"),
+                "References: " + firstNonBlank(references, "N/A"),
+                "URL: " + firstNonBlank(textAt(detail, "url"), textAt(summary, "url"), "https://www.iucnredlist.org")
+        ));
+    }
+
+    private List<ExternalRecord> collectExternalJson(String sourceCode, String url, ExternalQuery query, int limit) {
+        String body;
+        try {
+            body = restClientBuilder.build()
                     .get()
                     .uri(URI.create(url))
                     .retrieve()
                     .body(String.class);
-            String title = sourceCode + " " + query;
-            String content = "Source: " + sourceCode + "\nQuery: " + query + "\nURL: " + url + "\nRaw summary:\n" + truncate(body, 24000);
-            return List.of(new ExternalRecord(sourceCode, sourceCode + "-" + Integer.toHexString(url.hashCode()), title, content, url));
         } catch (RuntimeException ex) {
-            throw new IllegalStateException(sourceCode + " collection failed: " + ex.getMessage(), ex);
+            throw new IllegalStateException(sourceCode + " collection request failed: " + ex.getMessage(), ex);
         }
+        if (!StringUtils.hasText(body)) {
+            throw new IllegalStateException(sourceCode + " 未返回可解析内容："
+                    + query.lookupQuery()
+                    + unresolvedQueryHint(query));
+        }
+
+        try {
+            JsonNode root = objectMapper.readTree(body);
+            List<ExternalRecord> records = switch (sourceCode) {
+                case "WORMS" -> buildWormsRecords(root, query, limit, url);
+                case "GBIF" -> buildGbifRecords(root, query, limit, url);
+                case "OBIS" -> buildObisRecords(root, query, limit, url);
+                default -> List.of();
+            };
+            if (records.isEmpty()) {
+                throw new IllegalStateException(sourceCode + " 未找到可导入的结构化记录："
+                        + query.lookupQuery()
+                        + unresolvedQueryHint(query));
+            }
+            return records;
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException(sourceCode + " returned non-JSON content", ex);
+        }
+    }
+
+    private List<ExternalRecord> buildWormsRecords(JsonNode root, ExternalQuery query, int limit, String requestUrl) {
+        JsonNode items = arrayAt(root, "value", "results");
+        if (!items.isArray() || items.isEmpty()) {
+            return List.of();
+        }
+
+        List<ExternalRecord> records = new ArrayList<>();
+        int max = Math.max(1, limit);
+        for (JsonNode item : items) {
+            if (records.size() >= max) {
+                break;
+            }
+            String aphiaId = textAt(item, "AphiaID");
+            String scientificName = firstNonBlank(textAt(item, "scientificname"), textAt(item, "valid_name"));
+            if (!StringUtils.hasText(aphiaId) && !StringUtils.hasText(scientificName)) {
+                continue;
+            }
+
+            String sourceUrl = firstNonBlank(textAt(item, "url"), requestUrl);
+            String titleName = firstNonBlank(query.chineseName(), scientificName, query.displayName());
+            String title = "WORMS " + titleName;
+            List<String> lines = new ArrayList<>();
+            addLine(lines, "Source", "WoRMS REST API");
+            addBlock(lines, externalQueryContext(query));
+            addLine(lines, "AphiaID", aphiaId);
+            addLine(lines, "Scientific name", scientificName);
+            addLine(lines, "Authority", textAt(item, "authority"));
+            addLine(lines, "Status", textAt(item, "status"));
+            addLine(lines, "Valid name", textAt(item, "valid_name"));
+            addLine(lines, "Valid AphiaID", textAt(item, "valid_AphiaID"));
+            addLine(lines, "Rank", textAt(item, "rank"));
+            addLine(lines, "Taxonomy", joinNonBlank(" > ",
+                    textAt(item, "kingdom"),
+                    textAt(item, "phylum"),
+                    textAt(item, "class"),
+                    textAt(item, "order"),
+                    textAt(item, "family"),
+                    textAt(item, "genus")));
+            addLine(lines, "Environment flags", wormsEnvironment(item));
+            addLine(lines, "Citation", cleanIucnText(textAt(item, "citation")));
+            addLine(lines, "URL", sourceUrl);
+
+            records.add(new ExternalRecord(
+                    "WORMS",
+                    "WORMS-" + firstNonBlank(aphiaId, Integer.toHexString((requestUrl + scientificName).hashCode())),
+                    title,
+                    String.join("\n", lines),
+                    sourceUrl
+            ));
+        }
+        return records;
+    }
+
+    private List<ExternalRecord> buildGbifRecords(JsonNode root, ExternalQuery query, int limit, String requestUrl) {
+        JsonNode items = arrayAt(root, "results");
+        if (!items.isArray() || items.isEmpty()) {
+            return List.of();
+        }
+
+        List<String> lines = new ArrayList<>();
+        addLine(lines, "Source", "GBIF Occurrence API");
+        addBlock(lines, externalQueryContext(query));
+        addLine(lines, "Matched occurrence count", textAt(root, "count"));
+        addLine(lines, "API URL", requestUrl);
+        addBlock(lines, "Occurrence samples:");
+
+        int max = Math.max(1, Math.min(limit, 20));
+        int index = 0;
+        for (JsonNode item : items) {
+            if (index >= max) {
+                break;
+            }
+            String sample = occurrenceSample(item, index + 1);
+            if (StringUtils.hasText(sample)) {
+                lines.add(sample);
+                index++;
+            }
+        }
+        if (index == 0) {
+            return List.of();
+        }
+
+        return List.of(new ExternalRecord(
+                "GBIF",
+                "GBIF-" + Integer.toHexString((requestUrl + query.lookupQuery()).hashCode()),
+                "GBIF " + query.displayName() + " occurrence summary",
+                String.join("\n", lines),
+                requestUrl
+        ));
+    }
+
+    private List<ExternalRecord> buildObisRecords(JsonNode root, ExternalQuery query, int limit, String requestUrl) {
+        JsonNode items = arrayAt(root, "results", "features");
+        if (!items.isArray() || items.isEmpty()) {
+            return List.of();
+        }
+
+        List<String> lines = new ArrayList<>();
+        addLine(lines, "Source", "OBIS Occurrence API");
+        addBlock(lines, externalQueryContext(query));
+        addLine(lines, "Matched occurrence count", firstNonBlank(textAt(root, "total"), textAt(root, "count"), textAt(root, "total_records")));
+        addLine(lines, "API URL", requestUrl);
+        addBlock(lines, "Occurrence samples:");
+
+        int max = Math.max(1, Math.min(limit, 20));
+        int index = 0;
+        for (JsonNode rawItem : items) {
+            if (index >= max) {
+                break;
+            }
+            JsonNode item = rawItem.has("properties") ? rawItem.path("properties") : rawItem;
+            String sample = occurrenceSample(item, index + 1);
+            if (StringUtils.hasText(sample)) {
+                lines.add(sample);
+                index++;
+            }
+        }
+        if (index == 0) {
+            return List.of();
+        }
+
+        return List.of(new ExternalRecord(
+                "OBIS",
+                "OBIS-" + Integer.toHexString((requestUrl + query.lookupQuery()).hashCode()),
+                "OBIS " + query.displayName() + " occurrence summary",
+                String.join("\n", lines),
+                requestUrl
+        ));
+    }
+
+    private String occurrenceSample(JsonNode item, int index) {
+        String scientificName = firstNonBlank(
+                textAt(item, "scientificName"),
+                textAt(item, "scientificname"),
+                textAt(item, "acceptedScientificName"),
+                textAt(item, "species")
+        );
+        String location = joinNonBlank(", ",
+                textAt(item, "country"),
+                textAt(item, "stateProvince"),
+                textAt(item, "locality"));
+        String coordinates = joinNonBlank(", ",
+                firstNonBlank(textAt(item, "decimalLatitude"), textAt(item, "decimallatitude")),
+                firstNonBlank(textAt(item, "decimalLongitude"), textAt(item, "decimallongitude")));
+        String date = firstNonBlank(textAt(item, "eventDate"), textAt(item, "date_year"), textAt(item, "yearcollected"));
+        String dataset = firstNonBlank(textAt(item, "datasetName"), textAt(item, "dataset_id"), textAt(item, "dataset"));
+        String basis = firstNonBlank(textAt(item, "basisOfRecord"), textAt(item, "basisofrecord"));
+        String key = firstNonBlank(textAt(item, "key"), textAt(item, "id"), textAt(item, "occurrenceID"), textAt(item, "occurrenceid"));
+
+        List<String> parts = new ArrayList<>();
+        addPart(parts, "record", key);
+        addPart(parts, "scientificName", scientificName);
+        addPart(parts, "location", location);
+        addPart(parts, "coordinates", coordinates);
+        addPart(parts, "date", date);
+        addPart(parts, "dataset", dataset);
+        addPart(parts, "basis", basis);
+        if (parts.isEmpty()) {
+            return "";
+        }
+        return index + ". " + String.join("; ", parts);
+    }
+
+    private ExternalQuery resolveExternalQuery(String query) {
+        String originalQuery = StringUtils.hasText(query) ? query.trim() : "marine biodiversity";
+        SpeciesRow matchedSpecies = findBestSpeciesMatch(originalQuery);
+        if (matchedSpecies != null && StringUtils.hasText(matchedSpecies.scientificName())) {
+            String displayName = StringUtils.hasText(matchedSpecies.chineseName())
+                    ? matchedSpecies.chineseName() + " / " + matchedSpecies.scientificName()
+                    : matchedSpecies.scientificName();
+            return new ExternalQuery(
+                    originalQuery,
+                    matchedSpecies.scientificName().trim(),
+                    displayName,
+                    matchedSpecies.chineseName(),
+                    matchedSpecies.scientificName(),
+                    true,
+                    "LOCAL_SPECIES",
+                    "Resolved by local species archive"
+            );
+        }
+        ExternalQuery aliasResolved = resolveExternalQueryWithAlias(originalQuery);
+        if (aliasResolved != null) {
+            return aliasResolved;
+        }
+        if (containsCjk(originalQuery)) {
+            ExternalQuery modelResolved = resolveExternalQueryWithModel(originalQuery);
+            if (modelResolved != null) {
+                return modelResolved;
+            }
+        }
+        return new ExternalQuery(
+                originalQuery,
+                originalQuery,
+                originalQuery,
+                null,
+                null,
+                false,
+                "UNRESOLVED",
+                containsCjk(originalQuery)
+                        ? "No matching local species or reliable model-resolved scientific name was found; the original query is kept only for error reporting."
+                        : ""
+        );
+    }
+
+    private ExternalQuery resolveExternalQueryWithAlias(String originalQuery) {
+        String normalized = normalizeNameToken(originalQuery);
+        if (!StringUtils.hasText(normalized)) {
+            return null;
+        }
+        Map<String, CommonNameAlias> aliases = Map.of(
+                "三文鱼", new CommonNameAlias("三文鱼", "Salmo salar", "Common Chinese seafood name; resolved to Atlantic salmon for external biodiversity APIs"),
+                "大西洋鲑", new CommonNameAlias("大西洋鲑", "Salmo salar", "Chinese common name for Atlantic salmon")
+        );
+        for (Map.Entry<String, CommonNameAlias> entry : aliases.entrySet()) {
+            String aliasKey = normalizeNameToken(entry.getKey());
+            if (normalized.equals(aliasKey) || normalized.contains(aliasKey) || aliasKey.contains(normalized)) {
+                CommonNameAlias alias = entry.getValue();
+                return new ExternalQuery(
+                        originalQuery,
+                        alias.scientificName(),
+                        alias.chineseName() + " / " + alias.scientificName(),
+                        alias.chineseName(),
+                        alias.scientificName(),
+                        true,
+                        "COMMON_NAME_ALIAS",
+                        alias.note()
+                );
+            }
+        }
+        return null;
+    }
+
+    private ExternalQuery resolveExternalQueryWithModel(String originalQuery) {
+        try {
+            JsonNode result = aiModelGateway.deepSeekJson(List.of(
+                    AiModelGateway.message("system", """
+                            You convert Chinese marine organism common names into scientific names for biodiversity APIs.
+                            Return JSON only with fields: chineseName, scientificName, confidence, reason.
+                            If the name is ambiguous, choose the most common biological taxon and lower confidence.
+                            If no credible Latin binomial can be inferred, return an empty scientificName and confidence 0.
+                            """),
+                    AiModelGateway.message("user", "Chinese query: " + originalQuery)
+            ));
+            String scientificName = normalizeScientificNameCandidate(firstNonBlank(
+                    textAt(result, "scientificName"),
+                    textAt(result, "latinName"),
+                    textAt(result, "binomial")
+            ));
+            double confidence = result.path("confidence").asDouble(0.0d);
+            if (!looksLikeScientificName(scientificName) || confidence < 0.45d) {
+                return null;
+            }
+            String chineseName = firstNonBlank(textAt(result, "chineseName"), originalQuery);
+            String displayName = chineseName + " / " + scientificName;
+            String reason = textAt(result, "reason");
+            String note = "Resolved by AI common-name parser; confidence="
+                    + String.format(Locale.ROOT, "%.2f", confidence)
+                    + (StringUtils.hasText(reason) ? "; reason=" + reason : "");
+            return new ExternalQuery(
+                    originalQuery,
+                    scientificName,
+                    displayName,
+                    chineseName,
+                    scientificName,
+                    false,
+                    "AI_COMMON_NAME",
+                    note
+            );
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private SpeciesRow findBestSpeciesMatch(String query) {
+        if (!StringUtils.hasText(query)) {
+            return null;
+        }
+        try {
+            List<SpeciesRow> matches = speciesMapper.findPage(query.trim(), null, null, null, null, null, 20, 0);
+            if (matches == null || matches.isEmpty()) {
+                return null;
+            }
+            String normalizedQuery = normalizeNameToken(query);
+            for (SpeciesRow row : matches) {
+                if (normalizedQuery.equals(normalizeNameToken(row.chineseName()))
+                        || normalizedQuery.equals(normalizeNameToken(row.scientificName()))) {
+                    return row;
+                }
+            }
+            for (SpeciesRow row : matches) {
+                String chineseName = normalizeNameToken(row.chineseName());
+                if (StringUtils.hasText(chineseName) && (chineseName.contains(normalizedQuery) || normalizedQuery.contains(chineseName))) {
+                    return row;
+                }
+            }
+            return matches.get(0);
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private String externalQueryContext(ExternalQuery query) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("Original query: ").append(query.originalQuery()).append('\n');
+        builder.append("Lookup query: ").append(query.lookupQuery()).append('\n');
+        if (StringUtils.hasText(query.chineseName())) {
+            builder.append("Chinese name: ").append(query.chineseName()).append('\n');
+        }
+        if (StringUtils.hasText(query.scientificName())) {
+            builder.append("Scientific name: ").append(query.scientificName()).append('\n');
+        }
+        if (StringUtils.hasText(query.resolutionSource())) {
+            builder.append("Resolution source: ").append(query.resolutionSource()).append('\n');
+        }
+        if (StringUtils.hasText(query.resolutionNote())) {
+            builder.append("Resolution note: ").append(query.resolutionNote()).append('\n');
+        }
+        return builder.toString().trim();
+    }
+
+    private String unresolvedQueryHint(ExternalQuery query) {
+        if (!query.resolved() && containsCjk(query.originalQuery())) {
+            return "；中文俗名未解析为学名，请先补充本地物种档案，或直接输入学名后重试";
+        }
+        return "";
+    }
+
+    private JsonNode arrayAt(JsonNode root, String... fieldNames) {
+        if (root == null || root.isMissingNode() || root.isNull()) {
+            return objectMapper.createArrayNode();
+        }
+        if (root.isArray()) {
+            return root;
+        }
+        for (String fieldName : fieldNames) {
+            JsonNode value = root.path(fieldName);
+            if (value.isArray()) {
+                return value;
+            }
+        }
+        return objectMapper.createArrayNode();
+    }
+
+    private void addLine(List<String> lines, String label, String value) {
+        if (StringUtils.hasText(value)) {
+            lines.add(label + ": " + value.trim());
+        }
+    }
+
+    private void addBlock(List<String> lines, String value) {
+        if (StringUtils.hasText(value)) {
+            lines.add(value.trim());
+        }
+    }
+
+    private void addPart(List<String> parts, String label, String value) {
+        if (StringUtils.hasText(value)) {
+            parts.add(label + "=" + value.trim());
+        }
+    }
+
+    private String joinNonBlank(String delimiter, String... values) {
+        List<String> nonBlank = new ArrayList<>();
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                String trimmed = value.trim();
+                if (!nonBlank.contains(trimmed)) {
+                    nonBlank.add(trimmed);
+                }
+            }
+        }
+        return String.join(delimiter, nonBlank);
+    }
+
+    private String wormsEnvironment(JsonNode item) {
+        List<String> flags = new ArrayList<>();
+        addEnvironmentFlag(flags, item, "isMarine", "marine");
+        addEnvironmentFlag(flags, item, "isBrackish", "brackish");
+        addEnvironmentFlag(flags, item, "isFreshwater", "freshwater");
+        addEnvironmentFlag(flags, item, "isTerrestrial", "terrestrial");
+        return String.join("; ", flags);
+    }
+
+    private void addEnvironmentFlag(List<String> flags, JsonNode item, String field, String label) {
+        JsonNode value = item.path(field);
+        if (value.isMissingNode() || value.isNull()) {
+            return;
+        }
+        String raw = value.asText("");
+        if (!StringUtils.hasText(raw)) {
+            return;
+        }
+        String normalized = switch (raw.trim().toLowerCase(Locale.ROOT)) {
+            case "1", "true", "yes" -> "yes";
+            case "0", "false", "no" -> "no";
+            default -> raw.trim();
+        };
+        flags.add(label + "=" + normalized);
+    }
+
+    private String normalizeScientificNameCandidate(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        String candidate = value.replace('_', ' ').trim();
+        Matcher matcher = Pattern.compile("\\b([A-Z][a-zA-Z-]+\\s+[a-z][a-zA-Z-]+)\\b").matcher(candidate);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+        return candidate;
+    }
+
+    private boolean looksLikeScientificName(String value) {
+        return StringUtils.hasText(value)
+                && !containsCjk(value)
+                && Pattern.matches("^[A-Z][a-zA-Z-]+\\s+[a-z][a-zA-Z-]+(?:\\s+.*)?$", value.trim());
+    }
+
+    private String encodeUrl(String value) {
+        return URLEncoder.encode(safe(value), StandardCharsets.UTF_8);
+    }
+
+    private String textAt(JsonNode node, String... path) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return "";
+        }
+        JsonNode current = node;
+        for (String segment : path) {
+            current = current.path(segment);
+            if (current.isMissingNode() || current.isNull()) {
+                return "";
+            }
+        }
+        if (current.isValueNode()) {
+            return current.asText("");
+        }
+        return current.toString();
+    }
+
+    private String joinJsonValues(JsonNode array, int limit, String... path) {
+        if (array == null || !array.isArray()) {
+            return "";
+        }
+        List<String> values = new ArrayList<>();
+        for (JsonNode item : array) {
+            String value = textAt(item, path);
+            value = cleanIucnText(value);
+            if (StringUtils.hasText(value) && !values.contains(value)) {
+                values.add(value);
+            }
+            if (values.size() >= limit) {
+                break;
+            }
+        }
+        return String.join("; ", values);
+    }
+
+    private String cleanIucnText(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        String cleaned = HtmlUtils.htmlUnescape(value)
+                .replaceAll("<[^>]+>", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        return cleaned;
+    }
+
+    private String normalizeNameToken(String value) {
+        return safe(value)
+                .replace(" ", "")
+                .replace("　", "")
+                .replace("_", "")
+                .replace("-", "")
+                .toLowerCase(Locale.ROOT);
+    }
+
+    private boolean containsCjk(String value) {
+        if (!StringUtils.hasText(value)) {
+            return false;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (ch >= '\u4e00' && ch <= '\u9fff') {
+                return true;
+            }
+        }
+        return false;
     }
 
     private List<ExternalRecord> collectWebDocuments(List<String> urls, int limit) {
@@ -1335,7 +2057,7 @@ public class RagKnowledgeService {
     }
 
     private String embeddingModel() {
-        return StringUtils.hasText(ragProperties.embedding().model()) ? ragProperties.embedding().model() : "text-embedding-v4";
+        return StringUtils.hasText(ragProperties.embedding().model()) ? ragProperties.embedding().model() : "bge-m3";
     }
 
     private int embeddingDimension() {
@@ -1387,6 +2109,21 @@ public class RagKnowledgeService {
     }
 
     private record IndexOutcome(boolean success, int chunkCount, String message) {
+    }
+
+    private record ExternalQuery(
+            String originalQuery,
+            String lookupQuery,
+            String displayName,
+            String chineseName,
+            String scientificName,
+            boolean resolved,
+            String resolutionSource,
+            String resolutionNote
+    ) {
+    }
+
+    private record CommonNameAlias(String chineseName, String scientificName, String note) {
     }
 
     private record ExternalRecord(String sourceCode, String externalId, String title, String content, String sourceUrl) {

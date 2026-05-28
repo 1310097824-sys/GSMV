@@ -145,4 +145,24 @@ public interface RagDocumentMapper {
             LIMIT #{limit}
             """)
     List<RagDocument> findUploadedDocuments(int limit);
+
+    @Select("""
+            SELECT *
+            FROM rag_document
+            WHERE source_type LIKE 'EXTERNAL\\_%'
+              AND status != 'DELETED'
+            ORDER BY updated_at DESC
+            LIMIT #{limit}
+            """)
+    List<RagDocument> findExternalDocuments(int limit);
+
+    @Select("""
+            SELECT *
+            FROM rag_document
+            WHERE source_type = #{sourceType}
+              AND status != 'DELETED'
+            ORDER BY updated_at DESC
+            LIMIT #{limit}
+            """)
+    List<RagDocument> findActiveBySourceType(@Param("sourceType") String sourceType, @Param("limit") int limit);
 }

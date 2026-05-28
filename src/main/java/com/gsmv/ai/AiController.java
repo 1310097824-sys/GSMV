@@ -1,6 +1,7 @@
 package com.gsmv.ai;
 
 import com.gsmv.ai.dto.AssistantAiDtos;
+import com.gsmv.ai.history.AssistantChatHistoryService;
 import com.gsmv.ai.dto.ObservationAiDtos;
 import com.gsmv.ai.dto.SpeciesAiDtos;
 import com.gsmv.common.ApiResponse;
@@ -16,6 +17,8 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -31,15 +34,18 @@ public class AiController {
     private final SpeciesAiService speciesAiService;
     private final ObservationAiService observationAiService;
     private final AssistantAiService assistantAiService;
+    private final AssistantChatHistoryService assistantChatHistoryService;
 
     public AiController(
             SpeciesAiService speciesAiService,
             ObservationAiService observationAiService,
-            AssistantAiService assistantAiService
+            AssistantAiService assistantAiService,
+            AssistantChatHistoryService assistantChatHistoryService
     ) {
         this.speciesAiService = speciesAiService;
         this.observationAiService = observationAiService;
         this.assistantAiService = assistantAiService;
+        this.assistantChatHistoryService = assistantChatHistoryService;
     }
 
     @PostMapping(value = "/species/identify", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -89,6 +95,17 @@ public class AiController {
     @PostMapping("/assistant/chat")
     public ApiResponse<AssistantAiDtos.ChatResponse> assistantChat(@Valid @RequestBody AssistantAiDtos.ChatRequest request) {
         return ApiResponse.success(assistantAiService.chat(request));
+    }
+
+    @GetMapping("/assistant/messages")
+    public ApiResponse<AssistantAiDtos.ChatHistoryResponse> assistantMessages() {
+        return ApiResponse.success(assistantChatHistoryService.listCurrentUserHistory());
+    }
+
+    @DeleteMapping("/assistant/messages")
+    public ApiResponse<Void> clearAssistantMessages() {
+        assistantChatHistoryService.clearCurrentUserHistory();
+        return ApiResponse.success();
     }
 
     @PostMapping(value = "/assistant/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

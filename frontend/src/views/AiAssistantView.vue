@@ -65,11 +65,19 @@
             <strong>对话区</strong>
             <p>不用按系统字段提问，像平常聊天一样问就行。</p>
             </div>
-            <span>{{ messages.length }} 条消息</span>
+            <div class="assistant-header__actions">
+              <span>{{ messages.length }} 条消息</span>
+              <el-tooltip content="刷新历史记录" placement="top">
+                <el-button circle :icon="Refresh" :loading="loadingHistory" @click="loadHistory()" />
+              </el-tooltip>
+              <el-tooltip content="清空当前账号的对话记录" placement="top">
+                <el-button circle :icon="Delete" :disabled="loading || loadingHistory" @click="clearHistory()" />
+              </el-tooltip>
+            </div>
           </div>
         </template>
 
-        <div ref="messagesContainerRef" class="assistant-messages">
+        <div ref="messagesContainerRef" v-loading="loadingHistory" class="assistant-messages" element-loading-text="加载历史记录...">
           <div
             v-for="(item, index) in messages"
             :key="`${item.role}-${index}`"
@@ -178,8 +186,9 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
-import { askAiAssistantStream } from '@/api/ai'
+import { Delete, Refresh } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { askAiAssistantStream, clearAiAssistantHistory, getAiAssistantHistory } from '@/api/ai'
 import type { AiAssistantChatResponse, AiAssistantMessage } from '@/types/gsmv'
 
 const quickPrompts = [
@@ -189,14 +198,15 @@ const quickPrompts = [
   '近 30 天谁的观测活动最活跃？',
 ]
 
-const messages = ref<AiAssistantMessage[]>([
-  {
-    role: 'assistant',
-    content: '你可以像平常聊天一样问我，比如“介绍一下中华白海豚”“湛江近海最近观测到了什么”。我会先查系统和知识库，再尽量用正常、好懂的话回答。',
-  },
-])
+const welcomeMessage: AiAssistantMessage = {
+  role: 'assistant',
+  content: '你可以像平常聊天一样问我，比如“介绍一下中华白海豚”“湛江近海最近观测到了什么”。我会先查系统和知识库，再尽量用正常、好懂的话回答。',
+}
+
+const messages = ref<AiAssistantMessage[]>([{ ...welcomeMessage }])
 const input = ref('')
 const loading = ref(false)
+const loadingHistory = ref(false)
 const lastResponse = ref<AiAssistantChatResponse | null>(null)
 const messagesContainerRef = ref<HTMLDivElement | null>(null)
 
@@ -255,7 +265,7 @@ watch(loading, (value) => {
 })
 
 onMounted(() => {
-  void scrollMessagesToBottom('auto')
+  void loadHistory()
 })
 
 async function sendMessage(prefilled?: string) {
@@ -264,7 +274,10 @@ async function sendMessage(prefilled?: string) {
     return
   }
 
-  const history = messages.value.filter((item) => item.role === 'user' || item.role === 'assistant').slice(-6)
+  const history = messages.value
+    .filter((item) => item.role === 'user' || item.role === 'assistant')
+    .filter((item) => item.content !== welcomeMessage.content)
+    .slice(-6)
   messages.value.push({ role: 'user', content: message })
   const assistantMessageIndex = messages.value.push({
     role: 'assistant',
@@ -307,6 +320,44 @@ async function sendMessage(prefilled?: string) {
     updateAssistantMessage(assistantMessageIndex, '这次回答失败了，请稍后再试，或者换一种问法。')
   } finally {
     loading.value = false
+  }
+}
+
+async function loadHistory() {
+  loadingHistory.value = true
+  try {
+    const history = await getAiAssistantHistory()
+    messages.value = history.messages.length
+      ? history.messages.map((item) => ({ role: item.role, content: item.content }))
+      : [{ ...welcomeMessage }]
+    lastResponse.value = history.lastResponse ?? null
+    await scrollMessagesToBottom('auto')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '对话历史加载失败')
+  } finally {
+    loadingHistory.value = false
+  }
+}
+
+async function clearHistory() {
+  if (loading.value || loadingHistory.value) {
+    return
+  }
+  try {
+    await ElMessageBox.confirm('只会清空当前登录账号的 AI 助手对话记录，其他账号不受影响。', '清空对话记录', {
+      confirmButtonText: '清空',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    await clearAiAssistantHistory()
+    messages.value = [{ ...welcomeMessage }]
+    lastResponse.value = null
+    ElMessage.success('当前账号的对话记录已清空')
+    await scrollMessagesToBottom('auto')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error(error instanceof Error ? error.message : '对话历史清空失败')
+    }
   }
 }
 
@@ -519,6 +570,22 @@ function appendAssistantMessage(index: number, content: string) {
 .assistant-header span {
   color: var(--gsmv-muted);
   font-size: 13px;
+}
+
+.assistant-header__actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.assistant-header__actions :deep(.el-button.is-circle) {
+  width: 34px;
+  height: 34px;
+  border-color: rgba(143, 226, 255, 0.24);
+  background: rgba(10, 45, 88, 0.52);
+  color: rgba(220, 247, 255, 0.9);
 }
 
 .assistant-messages {

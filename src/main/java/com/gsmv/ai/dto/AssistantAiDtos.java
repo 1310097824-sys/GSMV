@@ -2,6 +2,7 @@ package com.gsmv.ai.dto;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import java.time.LocalDateTime;
 import java.util.List;
 
 public final class AssistantAiDtos {
@@ -55,6 +56,20 @@ public final class AssistantAiDtos {
             List<String> highlights,
             List<EvidenceItem> evidence,
             boolean cacheHit
+    ) {
+    }
+
+    public record ChatHistoryItem(
+            Long id,
+            String role,
+            String content,
+            LocalDateTime createdAt
+    ) {
+    }
+
+    public record ChatHistoryResponse(
+            List<ChatHistoryItem> messages,
+            ChatResponse lastResponse
     ) {
     }
 

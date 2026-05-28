@@ -81,11 +81,22 @@ public class AiModelGateway {
     }
 
     public List<List<Double>> embedTexts(List<String> texts) {
-        AiProperties.Bailian config = properties.bailian();
-        requireConfigured(config.enabled(), config.apiKey(), "阿里云百炼 Embedding");
         if (texts == null || texts.isEmpty()) {
             return List.of();
         }
+        String provider = embeddingProvider();
+        if ("ollama".equalsIgnoreCase(provider)) {
+            return embedTextsWithOllama(texts);
+        }
+        if ("bailian".equalsIgnoreCase(provider) || "dashscope".equalsIgnoreCase(provider)) {
+            return embedTextsWithBailian(texts);
+        }
+        throw new BusinessException(ErrorCode.BAD_REQUEST, "Unsupported embedding provider: " + provider, HttpStatus.BAD_REQUEST);
+    }
+
+    private List<List<Double>> embedTextsWithBailian(List<String> texts) {
+        AiProperties.Bailian config = properties.bailian();
+        requireConfigured(config.enabled(), config.apiKey(), "阿里云百炼 Embedding");
         if (texts.size() > 10) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "Embedding 每批最多支持 10 段文本", HttpStatus.BAD_REQUEST);
         }
@@ -149,6 +160,59 @@ public class AiModelGateway {
         throw new BusinessException(ErrorCode.INTERNAL_ERROR, "Embedding 服务调用失败，请稍后重试", HttpStatus.BAD_GATEWAY);
     }
 
+    private List<List<Double>> embedTextsWithOllama(List<String> texts) {
+        AiProperties.Ollama config = ollamaConfig();
+        requireEnabled(config.enabled(), "Ollama Embedding");
+        if (texts.size() > 10) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "Embedding batch size must be no more than 10", HttpStatus.BAD_REQUEST);
+        }
+
+        String model = StringUtils.hasText(config.embeddingModel()) ? config.embeddingModel() : "bge-m3";
+        Integer dimension = config.embeddingDimension() == null ? 1024 : config.embeddingDimension();
+        Map<String, Object> requestBody = Map.of(
+                "model", model,
+                "input", texts
+        );
+
+        RestClient client = restClientBuilder
+                .baseUrl(StringUtils.hasText(config.baseUrl()) ? config.baseUrl() : "http://localhost:11434")
+                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                .build();
+
+        for (int attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+            try {
+                String responseBody = client.post()
+                        .uri("/api/embed")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(requestBody)
+                        .retrieve()
+                        .body(String.class);
+                JsonNode response = objectMapper.readTree(responseBody);
+                return parseOllamaEmbeddings(response, texts.size(), dimension);
+            } catch (RestClientResponseException ex) {
+                if (attempt < MAX_RETRY_ATTEMPTS && shouldRetry(ex)) {
+                    sleepQuietly(350L * attempt);
+                    continue;
+                }
+                throw new BusinessException(
+                        ErrorCode.INTERNAL_ERROR,
+                        "Ollama embedding call failed: " + readableErrorMessage(ex),
+                        HttpStatus.BAD_GATEWAY
+                );
+            } catch (BusinessException ex) {
+                throw ex;
+            } catch (Exception ex) {
+                if (attempt < MAX_RETRY_ATTEMPTS) {
+                    sleepQuietly(350L * attempt);
+                    continue;
+                }
+                throw new BusinessException(ErrorCode.INTERNAL_ERROR, "Ollama embedding call failed: " + ex.getMessage(), HttpStatus.BAD_GATEWAY);
+            }
+        }
+
+        throw new BusinessException(ErrorCode.INTERNAL_ERROR, "Ollama embedding call failed, please retry later", HttpStatus.BAD_GATEWAY);
+    }
+
     public JsonNode bailianVisionJson(String systemPrompt, String userPrompt, byte[] imageBytes, String contentType) {
         AiProperties.Bailian config = properties.bailian();
         requireConfigured(config.enabled(), config.apiKey(), "阿里云百炼");
@@ -177,6 +241,50 @@ public class AiModelGateway {
 
     public static Map<String, Object> message(String role, String content) {
         return Map.of("role", role, "content", content);
+    }
+
+    private List<List<Double>> parseOllamaEmbeddings(JsonNode response, int expectedCount, Integer expectedDimension) {
+        JsonNode embeddingsNode = response.path("embeddings");
+        if (embeddingsNode.isMissingNode() && response.has("embedding")) {
+            embeddingsNode = objectMapper.createArrayNode().add(response.path("embedding"));
+        }
+        if (!embeddingsNode.isArray()) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "Ollama embedding response missing embeddings", HttpStatus.BAD_GATEWAY);
+        }
+
+        List<List<Double>> embeddings = new ArrayList<>();
+        for (JsonNode item : embeddingsNode) {
+            List<Double> vector = new ArrayList<>();
+            for (JsonNode value : item) {
+                vector.add(value.asDouble());
+            }
+            embeddings.add(vector);
+        }
+        if (embeddings.size() != expectedCount) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "Ollama embedding count mismatch", HttpStatus.BAD_GATEWAY);
+        }
+        if (expectedDimension != null && expectedDimension > 0) {
+            for (List<Double> vector : embeddings) {
+                if (vector.size() != expectedDimension) {
+                    throw new BusinessException(ErrorCode.INTERNAL_ERROR, "Ollama embedding dimension mismatch", HttpStatus.BAD_GATEWAY);
+                }
+            }
+        }
+        return embeddings;
+    }
+
+    private String embeddingProvider() {
+        if (properties.embedding() != null && StringUtils.hasText(properties.embedding().provider())) {
+            return properties.embedding().provider();
+        }
+        return "ollama";
+    }
+
+    private AiProperties.Ollama ollamaConfig() {
+        if (properties.ollama() != null) {
+            return properties.ollama();
+        }
+        return new AiProperties.Ollama(true, "http://localhost:11434", "bge-m3", 1024);
     }
 
     private JsonNode requestJson(String baseUrl, String apiKey, Map<String, Object> requestBody) {
@@ -294,6 +402,16 @@ public class AiModelGateway {
             throw new BusinessException(
                     ErrorCode.INTERNAL_ERROR,
                     providerName + " 未配置可用 API Key，请先设置环境变量后再使用智能服务",
+                    HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    private void requireEnabled(Boolean enabled, String providerName) {
+        if (enabled != null && !enabled) {
+            throw new BusinessException(
+                    ErrorCode.INTERNAL_ERROR,
+                    providerName + " is disabled",
                     HttpStatus.SERVICE_UNAVAILABLE
             );
         }

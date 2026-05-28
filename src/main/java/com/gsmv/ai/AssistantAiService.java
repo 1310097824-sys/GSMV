@@ -1,6 +1,7 @@
 package com.gsmv.ai;
 
 import com.gsmv.ai.dto.AssistantAiDtos;
+import com.gsmv.ai.history.AssistantChatHistoryService;
 import com.gsmv.ai.rag.RagKnowledgeService;
 import com.gsmv.ai.rag.RagSearchHit;
 import com.gsmv.audit.service.AuditService;
@@ -83,6 +84,25 @@ public class AssistantAiService {
             "只看", "只筛", "换成", "改成", "按", "那", "那就", "那现在", "这里", "这个范围", "这个区域",
             "再看", "继续看", "近30天", "近三年", "最近", "现在呢", "然后呢", "详细点", "展开点位"
     );
+    private static final List<String> SPECIES_PROFILE_KEYWORDS = List.of(
+            "是什么", "是啥", "介绍", "介绍一下", "科普", "了解一下", "讲讲", "说说", "简介", "资料", "信息"
+    );
+    private static final List<String> SPECIES_OBSERVATION_KEYWORDS = List.of(
+            "观测", "记录", "最近", "近30天", "近三年", "活跃", "出现", "发现", "看到"
+    );
+    private static final List<String> SYSTEM_DATA_KEYWORDS = List.of(
+            "系统", "数据库", "档案", "记录", "观测", "点位", "地图", "分布", "范围", "哪里", "在哪",
+            "保护等级", "IUCN", "濒危", "易危", "国家一级", "国家二级", "栖息", "栖息地", "形态", "习性",
+            "生态", "趋势", "统计", "数量", "有哪些", "列出", "筛选"
+    );
+    private static final List<String> EXPLICIT_SYSTEM_DATA_KEYWORDS = List.of(
+            "系统", "数据库", "档案", "记录", "观测", "点位", "地图", "保护等级", "IUCN", "濒危", "易危",
+            "国家一级", "国家二级", "分布", "栖息", "形态", "习性", "数量", "趋势", "统计", "筛选"
+    );
+    private static final List<String> CASUAL_GENERAL_KEYWORDS = List.of(
+            "好吃", "吃吗", "能吃", "怎么吃", "做法", "口感", "味道", "价格", "多少钱", "哪里买",
+            "怎么样", "好不好", "推荐", "可以吗", "能不能", "聊天", "笑话", "天气", "电影", "旅游"
+    );
 
     private final AiProperties aiProperties;
     private final ObservationService observationService;
@@ -92,6 +112,7 @@ public class AssistantAiService {
     private final AssistantQueryCache assistantQueryCache;
     private final RagKnowledgeService ragKnowledgeService;
     private final AiModelGateway aiModelGateway;
+    private final AssistantChatHistoryService assistantChatHistoryService;
 
     public AssistantAiService(
             AiProperties aiProperties,
@@ -101,7 +122,8 @@ public class AssistantAiService {
             AuditService auditService,
             AssistantQueryCache assistantQueryCache,
             RagKnowledgeService ragKnowledgeService,
-            AiModelGateway aiModelGateway
+            AiModelGateway aiModelGateway,
+            AssistantChatHistoryService assistantChatHistoryService
     ) {
         this.aiProperties = aiProperties;
         this.observationService = observationService;
@@ -111,14 +133,18 @@ public class AssistantAiService {
         this.assistantQueryCache = assistantQueryCache;
         this.ragKnowledgeService = ragKnowledgeService;
         this.aiModelGateway = aiModelGateway;
+        this.assistantChatHistoryService = assistantChatHistoryService;
     }
 
     public AssistantAiDtos.ChatResponse chat(AssistantAiDtos.ChatRequest request) {
-        String cacheKey = buildCacheKey(request);
+        Long currentUserId = SecurityUtils.requireCurrentUser().userId();
+        String cacheKey = currentUserId + "::" + buildCacheKey(request);
         AssistantAiDtos.ChatResponse cachedResponse = assistantQueryCache.get(cacheKey);
         if (cachedResponse != null) {
+            AssistantAiDtos.ChatResponse response = withCacheHit(cachedResponse, true);
+            assistantChatHistoryService.recordExchange(request, response);
             auditService.record(
-                    SecurityUtils.requireCurrentUser().userId(),
+                    currentUserId,
                     "AI",
                     "ASSISTANT_CHAT",
                     "ASSISTANT",
@@ -126,7 +152,7 @@ public class AssistantAiService {
                     true,
                     "{\"message\":\"" + escapeJson(request.message()) + "\",\"cached\":true}"
             );
-            return withCacheHit(cachedResponse, true);
+            return response;
         }
 
         AssistantAiDtos.StructuredQuery plan = extractStructuredQueryFast(request.message(), request.history());
@@ -138,10 +164,11 @@ public class AssistantAiService {
             List<RagSearchHit> ragHits = ragKnowledgeService.retrieveForScenario(RagKnowledgeService.SCENARIO_ASSISTANT, request.message(), 6);
             response = buildConversationalResponse(request, plan, context, ragHits);
         }
+        assistantChatHistoryService.recordExchange(request, response);
         assistantQueryCache.put(cacheKey, response);
 
         auditService.record(
-                SecurityUtils.requireCurrentUser().userId(),
+                currentUserId,
                 "AI",
                 "ASSISTANT_CHAT",
                 "ASSISTANT",
@@ -240,6 +267,7 @@ public class AssistantAiService {
                 直接回答用户问题，不要模板化，不要总说“按当前筛选条件”“系统中匹配到”。
                 用户问“介绍一下/是什么/某个物种名”时，默认按科普介绍来回答：先说明它是什么，再讲特征、分布、保护状态和系统内相关记录。
                 系统数据和 RAG 证据是参考资料，不要机械罗列；可以自然地说“我这里查到...”。
+                如果用户问的是日常、常识、口味、闲聊或开放式问题，要像通用 DeepSeek 助手一样直接回答，不要强行转成系统统计。
                 如果资料不足，可以结合通用海洋生物知识回答，但要避免编造具体系统记录。
                 回答使用中文，语气专业、顺口、像 GPT 一样会解释；一般控制在 2 到 5 个短段落。
                 """));
@@ -267,7 +295,7 @@ public class AssistantAiService {
                 """.formatted(
                 request.message(),
                 describePlan(plan),
-                buildContextForPrompt(context),
+                buildContextForPrompt(plan, context),
                 buildRagForPrompt(ragHits)
         )));
         return messages;
@@ -309,8 +337,17 @@ public class AssistantAiService {
                 .toList();
     }
 
-    private String buildContextForPrompt(AssistantContext context) {
+    private String buildContextForPrompt(AssistantAiDtos.StructuredQuery plan, AssistantContext context) {
         List<String> lines = new ArrayList<>();
+        if ("general_chat".equals(safe(plan.intent()))
+                && context.species().isEmpty()
+                && context.observationViews().isEmpty()
+                && context.ecosystemAnalytics().isEmpty()) {
+            return "本次问题没有命中必须引用的系统业务数据。请优先按通用问答自然回答，RAG 证据仅作为可选参考。";
+        }
+        if ("general_chat".equals(safe(plan.intent()))) {
+            lines.add("本次问题偏通用问答；下面资料仅供参考，不要把回答写成系统统计。");
+        }
         lines.add("系统概况：物种档案 " + context.dashboardSummary().totalSpecies()
                 + " 条，观测记录 " + context.dashboardSummary().totalObservations()
                 + " 条，生态系统 " + context.dashboardSummary().totalEcosystems() + " 个。");
@@ -509,6 +546,18 @@ public class AssistantAiService {
 
     private AssistantContext collectContext(AssistantAiDtos.StructuredQuery plan) {
         DashboardSummary dashboardSummary = reportService.dashboardSummary();
+        if ("general_chat".equals(safe(plan.intent()))) {
+            return new AssistantContext(
+                    dashboardSummary,
+                    List.of(),
+                    List.of(),
+                    loadGeneralChatSpecies(plan),
+                    List.of(),
+                    List.of(),
+                    List.of()
+            );
+        }
+
         List<EcosystemAnalyticsPoint> ecosystemAnalytics = reportService.ecosystemAnalytics().stream()
                 .filter(item -> !StringUtils.hasText(plan.ecosystemKeyword())
                         || containsIgnoreCase(item.ecosystemName(), plan.ecosystemKeyword())
@@ -623,15 +672,43 @@ public class AssistantAiService {
         );
     }
 
+    private List<SpeciesDetailView> loadGeneralChatSpecies(AssistantAiDtos.StructuredQuery plan) {
+        if (!StringUtils.hasText(plan.speciesKeyword())) {
+            return List.of();
+        }
+        int speciesLimit = Math.min(Math.max(resolveLimit(plan.limit(), aiProperties.assistantSpeciesLimit()), 8), 20);
+        return speciesService.listSpecies(
+                        emptyToNull(plan.speciesKeyword()),
+                        1,
+                        null,
+                        null,
+                        null,
+                        null,
+                        1,
+                        speciesLimit
+                )
+                .items()
+                .stream()
+                .map(item -> speciesService.getSpecies(item.id()))
+                .filter(detail -> containsIgnoreCase(detail.chineseName(), plan.speciesKeyword())
+                        || containsIgnoreCase(detail.scientificName(), plan.speciesKeyword())
+                        || containsIgnoreCase(detail.classificationPath(), plan.speciesKeyword()))
+                .sorted(this::compareSpeciesPriority)
+                .limit(resolveLimit(plan.limit(), aiProperties.assistantSpeciesLimit()))
+                .toList();
+    }
+
     private AssistantAiDtos.ChatResponse buildLocalResponse(
             AssistantAiDtos.StructuredQuery plan,
             AssistantContext context
     ) {
         String answer = switch (safe(plan.intent())) {
+            case "general_chat" -> buildGeneralChatAnswer(plan, context);
             case "map_scope" -> buildMapScopeAnswer(plan, context);
             case "observation_activity" -> buildObservationActivityAnswer(plan, context);
             case "ecosystem_trend" -> buildTrendAnswer(plan, context);
             case "observation_lookup" -> buildObservationAnswer(plan, context);
+            case "species_profile" -> buildSpeciesProfileAnswer(plan, context);
             case "species_lookup" -> buildSpeciesAnswer(plan, context);
             default -> buildOverviewAnswer(plan, context);
         };
@@ -642,6 +719,20 @@ public class AssistantAiService {
                 buildEvidence(plan, context),
                 false
         );
+    }
+
+    private String buildGeneralChatAnswer(AssistantAiDtos.StructuredQuery plan, AssistantContext context) {
+        if (!context.species().isEmpty()) {
+            SpeciesDetailView species = context.species().get(0);
+            return "这个问题更偏日常或通用问答。系统里和它对应的物种档案是 "
+                    + displaySpeciesName(species)
+                    + "，可参考信息包括："
+                    + "保护等级 " + firstNonBlank(species.protectionLevel(), "未标注")
+                    + "，IUCN 状态 " + firstNonBlank(species.iucnStatus(), "未标注")
+                    + "，分布 " + firstNonBlank(species.geoRangeText(), species.distribution(), "未填写")
+                    + "。如果 DeepSeek 服务可用，我会结合这些资料和通用知识直接回答你的原问题。";
+        }
+        return "这是一个通用问题，我会优先按自然问答来回答，并把 RAG 检索到的资料作为参考；当前如果模型服务不可用，就只能先给出有限的系统资料。";
     }
 
     private AssistantAiDtos.ChatResponse buildLightweightResponse(
@@ -764,6 +855,50 @@ public class AssistantAiService {
         return answer.toString();
     }
 
+    private String buildSpeciesProfileAnswer(AssistantAiDtos.StructuredQuery plan, AssistantContext context) {
+        if (context.species().isEmpty()) {
+            return buildNoDataAnswer(plan, context.dashboardSummary());
+        }
+
+        SpeciesDetailView species = context.species().get(0);
+        String displayName = displaySpeciesName(species);
+        StringBuilder answer = new StringBuilder();
+        answer.append(displayName).append("是");
+        String description = firstNonBlank(species.description(), species.classificationPath(), "系统物种库中的一个海洋生物物种");
+        answer.append(trimTrailingPunctuation(description)).append("。");
+
+        List<String> facts = new ArrayList<>();
+        if (StringUtils.hasText(species.classificationPath())) {
+            facts.add("分类上属于 " + species.classificationPath());
+        }
+        if (StringUtils.hasText(species.protectionLevel()) || StringUtils.hasText(species.iucnStatus())) {
+            facts.add("保护信息为 " + firstNonBlank(species.protectionLevel(), "未标注保护等级")
+                    + "，IUCN 状态 " + firstNonBlank(species.iucnStatus(), "未标注"));
+        }
+        if (StringUtils.hasText(species.geoRangeText()) || StringUtils.hasText(species.distribution())) {
+            facts.add("分布范围主要在 " + firstNonBlank(species.geoRangeText(), species.distribution()));
+        }
+        if (StringUtils.hasText(species.habitat())) {
+            facts.add("常见栖息环境是 " + trimTrailingPunctuation(species.habitat()));
+        }
+        if (!facts.isEmpty()) {
+            answer.append(" ").append(String.join("；", facts)).append("。");
+        }
+
+        if (StringUtils.hasText(species.morphology())) {
+            answer.append(" 形态特征方面，").append(trimTrailingPunctuation(species.morphology())).append("。");
+        }
+        if (StringUtils.hasText(species.habit())) {
+            answer.append(" 生活习性方面，").append(trimTrailingPunctuation(species.habit())).append("。");
+        }
+        if (!context.observationViews().isEmpty()) {
+            answer.append(" 在当前系统数据里，它还关联到 ")
+                    .append(context.observationViews().size())
+                    .append(" 条观测记录，可继续追问“最近在哪里观测到”或“分布范围”。");
+        }
+        return answer.toString();
+    }
+
     private String buildTrendAnswer(AssistantAiDtos.StructuredQuery plan, AssistantContext context) {
         if (context.trendPoints().isEmpty() && context.ecosystemAnalytics().isEmpty()) {
             return buildNoDataAnswer(plan, context.dashboardSummary());
@@ -878,6 +1013,14 @@ public class AssistantAiService {
 
     private List<String> buildHighlights(AssistantAiDtos.StructuredQuery plan, AssistantContext context) {
         List<String> highlights = new ArrayList<>();
+        if ("general_chat".equals(safe(plan.intent()))) {
+            if (!context.species().isEmpty()) {
+                highlights.add("通用问答模式：已找到 " + context.species().size() + " 个相关物种档案");
+            } else {
+                highlights.add("通用问答模式：RAG 证据作为可选参考");
+            }
+            return highlights;
+        }
         if (!context.observationViews().isEmpty()) {
             highlights.add("匹配到 " + context.observationViews().size() + " 条观测记录");
         }
@@ -922,6 +1065,23 @@ public class AssistantAiService {
 
     private List<AssistantAiDtos.EvidenceItem> buildEvidence(AssistantAiDtos.StructuredQuery plan, AssistantContext context) {
         List<AssistantAiDtos.EvidenceItem> evidence = new ArrayList<>();
+        if ("general_chat".equals(safe(plan.intent()))) {
+            context.species().stream().limit(3).forEach(item -> evidence.add(new AssistantAiDtos.EvidenceItem(
+                    "species",
+                    firstNonBlank(item.chineseName(), item.scientificName(), "物种档案"),
+                    "保护等级：" + firstNonBlank(item.protectionLevel(), "未标注")
+                            + "；IUCN：" + firstNonBlank(item.iucnStatus(), "未标注")
+                            + "；分布：" + firstNonBlank(item.geoRangeText(), item.distribution(), "未填写")
+            )));
+            if (evidence.isEmpty()) {
+                evidence.add(new AssistantAiDtos.EvidenceItem(
+                        "mode",
+                        "通用问答",
+                        "该问题未触发系统统计意图，将优先由通用模型回答，并把 RAG 检索结果作为参考。"
+                ));
+            }
+            return evidence;
+        }
         evidence.add(new AssistantAiDtos.EvidenceItem(
                 "dashboard",
                 "系统概况",
@@ -1175,7 +1335,7 @@ public class AssistantAiService {
         if ("clarify".equals(intent) || "capability_help".equals(intent)) {
             return 4;
         }
-        return "overview".equals(intent) ? 6 : 8;
+        return "overview".equals(intent) || "general_chat".equals(intent) ? 6 : 8;
     }
 
     private String inferIntent(String message, String speciesKeyword, String ecosystemKeyword, boolean includeTrend, boolean riskOnly) {
@@ -1196,15 +1356,70 @@ public class AssistantAiService {
                 return "ecosystem_trend";
             }
         }
-        if (containsAny(message, List.of("观测到", "观测记录", "最近", "近30天", "近三年", "活跃"))) {
+        if (isObservationLookupQuestion(message, speciesKeyword, ecosystemKeyword)) {
             return "observation_lookup";
         }
-        if (StringUtils.hasText(speciesKeyword)
-                || riskOnly
-                || containsAny(message, List.of("物种", "分布", "保护等级", "IUCN", "濒危"))) {
+        if (isSpeciesProfileQuestion(message, speciesKeyword)) {
+            return "species_profile";
+        }
+        if (isCasualGeneralQuestion(message) && !hasExplicitSystemDataSignal(message)) {
+            return "general_chat";
+        }
+        if (riskOnly || isSystemDataQuestion(message, speciesKeyword, ecosystemKeyword)) {
             return "species_lookup";
         }
-        return "overview";
+        return "general_chat";
+    }
+
+    private boolean isObservationLookupQuestion(String message, String speciesKeyword, String ecosystemKeyword) {
+        if (containsAny(message, List.of("观测到", "观测记录", "观测", "点位"))) {
+            return true;
+        }
+        boolean hasDomainAnchor = hasDomainAnchor(message, speciesKeyword, ecosystemKeyword);
+        if (containsAny(message, List.of("记录", "出现", "发现", "看到")) && hasDomainAnchor) {
+            return true;
+        }
+        return containsAny(message, List.of("最近", "近30天", "近三年", "过去"))
+                && hasDomainAnchor
+                && hasExplicitSystemDataSignal(message);
+    }
+
+    private boolean isCasualGeneralQuestion(String message) {
+        return containsAny(message, CASUAL_GENERAL_KEYWORDS);
+    }
+
+    private boolean hasExplicitSystemDataSignal(String message) {
+        return containsAny(message, EXPLICIT_SYSTEM_DATA_KEYWORDS);
+    }
+
+    private boolean isSystemDataQuestion(String message, String speciesKeyword, String ecosystemKeyword) {
+        if (hasExplicitSystemDataSignal(message)) {
+            return true;
+        }
+        return hasDomainAnchor(message, speciesKeyword, ecosystemKeyword) && containsAny(message, SYSTEM_DATA_KEYWORDS);
+    }
+
+    private boolean hasDomainAnchor(String message, String speciesKeyword, String ecosystemKeyword) {
+        return StringUtils.hasText(speciesKeyword)
+                || StringUtils.hasText(ecosystemKeyword)
+                || containsAny(message, List.of("物种", "海洋生物", "生态系统", "保护", "分布"));
+    }
+
+    private boolean isSpeciesProfileQuestion(String message, String speciesKeyword) {
+        if (!StringUtils.hasText(speciesKeyword)) {
+            return false;
+        }
+        String normalizedMessage = normalize(message);
+        if (containsAny(normalizedMessage, SPECIES_OBSERVATION_KEYWORDS)
+                || containsAny(normalizedMessage, List.of("分布", "哪里", "在哪", "地点", "趋势", "变化"))) {
+            return false;
+        }
+        if (containsAny(normalizedMessage, SPECIES_PROFILE_KEYWORDS)) {
+            return true;
+        }
+        String compactMessage = normalizedMessage.replaceAll("[\\s?？。！!，,、]+", "");
+        String compactSpecies = speciesKeyword.replaceAll("[\\s?？。！!，,、]+", "");
+        return compactMessage.equalsIgnoreCase(compactSpecies);
     }
 
     private boolean isClarifyOnlyMessage(String message) {
@@ -1585,6 +1800,23 @@ public class AssistantAiService {
             return false;
         }
         return keywords.stream().anyMatch(keyword -> containsIgnoreCase(source, keyword));
+    }
+
+    private String displaySpeciesName(SpeciesDetailView species) {
+        String chineseName = safe(species.chineseName());
+        String scientificName = safe(species.scientificName());
+        if (StringUtils.hasText(chineseName) && StringUtils.hasText(scientificName)) {
+            return chineseName + "（" + scientificName + "）";
+        }
+        return firstNonBlank(chineseName, scientificName, "该物种");
+    }
+
+    private String trimTrailingPunctuation(String value) {
+        String trimmed = safe(value);
+        while (trimmed.endsWith("。") || trimmed.endsWith("；") || trimmed.endsWith(";") || trimmed.endsWith(".")) {
+            trimmed = trimmed.substring(0, trimmed.length() - 1).trim();
+        }
+        return trimmed;
     }
 
     private String firstNonBlank(String... values) {

@@ -3,7 +3,9 @@ param(
   [AllowEmptyString()]
   [string]$BailianApiKey = '',
   [AllowEmptyString()]
-  [string]$DeepSeekApiKey = ''
+  [string]$DeepSeekApiKey = '',
+  [AllowEmptyString()]
+  [string]$IucnApiToken = $(if ($env:IUCN_API_TOKEN) { $env:IUCN_API_TOKEN } else { [Environment]::GetEnvironmentVariable('IUCN_API_TOKEN', 'User') })
 )
 
 $ErrorActionPreference = 'Stop'
@@ -157,10 +159,12 @@ foreach ($logFile in @($backendOut, $backendErr, $frontendOut, $frontendErr)) {
 
 $bailianKeyForRun = ConvertTo-CmdSetValue $BailianApiKey
 $deepSeekKeyForRun = ConvertTo-CmdSetValue $DeepSeekApiKey
+$iucnTokenForRun = ConvertTo-CmdSetValue $IucnApiToken
 $backendEnvCommand = @(
   "set `"BAILIAN_API_KEY=$bailianKeyForRun`"",
   "set `"DASHSCOPE_API_KEY=$bailianKeyForRun`"",
-  "set `"DEEPSEEK_API_KEY=$deepSeekKeyForRun`""
+  "set `"DEEPSEEK_API_KEY=$deepSeekKeyForRun`"",
+  "set `"IUCN_API_TOKEN=$iucnTokenForRun`""
 ) -join ' && '
 
 $backendCommand = "cd /d `"$rootPath`" && $backendEnvCommand && call mvnw.cmd spring-boot:run 1>> `"$backendOut`" 2>> `"$backendErr`""

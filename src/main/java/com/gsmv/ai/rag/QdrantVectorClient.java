@@ -58,6 +58,31 @@ public class QdrantVectorClient {
         if (current.available()) {
             return true;
         }
+        return createCollection();
+    }
+
+    public boolean recreateCollection() {
+        if (!isEnabled()) {
+            return false;
+        }
+        try {
+            client().delete()
+                    .uri("/collections/{collection}", collection())
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (RestClientResponseException ex) {
+            if (ex.getStatusCode().value() != 404) {
+                log.warn("Qdrant collection delete failed: {}", ex.getResponseBodyAsString());
+                return false;
+            }
+        } catch (RuntimeException ex) {
+            log.warn("Qdrant collection delete failed: {}", ex.getMessage());
+            return false;
+        }
+        return createCollection();
+    }
+
+    private boolean createCollection() {
         try {
             client().put()
                     .uri("/collections/{collection}", collection())
@@ -104,6 +129,34 @@ public class QdrantVectorClient {
             return false;
         } catch (RuntimeException ex) {
             log.warn("Qdrant upsert failed: {}", ex.getMessage());
+            return false;
+        }
+    }
+
+    public boolean deleteByDocumentId(Long documentId) {
+        if (documentId == null || !isEnabled()) {
+            return false;
+        }
+        try {
+            client().post()
+                    .uri("/collections/{collection}/points/delete?wait=true", collection())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(Map.of(
+                            "filter", Map.of(
+                                    "must", List.of(Map.of(
+                                            "key", "documentId",
+                                            "match", Map.of("value", documentId)
+                                    ))
+                            )
+                    ))
+                    .retrieve()
+                    .toBodilessEntity();
+            return true;
+        } catch (RestClientResponseException ex) {
+            log.warn("Qdrant document points delete failed: {}", ex.getResponseBodyAsString());
+            return false;
+        } catch (RuntimeException ex) {
+            log.warn("Qdrant document points delete failed: {}", ex.getMessage());
             return false;
         }
     }

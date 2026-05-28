@@ -9,13 +9,15 @@ public record RagProperties(
         Vector vector,
         Qdrant qdrant,
         Embedding embedding,
-        Ingest ingest
+        Ingest ingest,
+        Iucn iucn
 ) {
     public RagProperties {
         vector = vector == null ? new Vector("qdrant") : vector;
         qdrant = qdrant == null ? new Qdrant(true, "http://localhost:6333", "gsmv_rag_chunks") : qdrant;
-        embedding = embedding == null ? new Embedding("text-embedding-v4", 1024) : embedding;
+        embedding = embedding == null ? new Embedding("bge-m3", 1024) : embedding;
         ingest = ingest == null ? new Ingest(DataSize.ofMegabytes(50), List.of()) : ingest;
+        iucn = iucn == null ? new Iucn("https://api.iucnredlist.org/api/v4", "") : iucn;
     }
 
     public record Vector(String provider) {
@@ -28,5 +30,8 @@ public record RagProperties(
     }
 
     public record Ingest(DataSize maxFileSize, List<String> allowedDomains) {
+    }
+
+    public record Iucn(String baseUrl, String apiToken) {
     }
 }

@@ -2,6 +2,7 @@ import { http, unwrap } from '@/api/http'
 import { ACCESS_TOKEN_KEY, PROFILE_KEY } from '@/constants/auth'
 import type {
   AiAssistantChatResponse,
+  AiAssistantHistoryResponse,
   AiAssistantMessage,
   AiAssistantStreamEvent,
   AiIdentifyImageResponse,
@@ -94,6 +95,14 @@ export function askAiAssistant(payload: {
   history?: AiAssistantMessage[]
 }) {
   return unwrap<AiAssistantChatResponse>(http.post('/v1/ai/assistant/chat', payload, { timeout: 60000 }))
+}
+
+export function getAiAssistantHistory() {
+  return unwrap<AiAssistantHistoryResponse>(http.get('/v1/ai/assistant/messages'))
+}
+
+export function clearAiAssistantHistory() {
+  return unwrap<void>(http.delete('/v1/ai/assistant/messages'))
 }
 
 export async function askAiAssistantStream(

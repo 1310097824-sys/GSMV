@@ -139,7 +139,7 @@
             <template #default="{ row }">
               <el-button link type="primary" @click.stop="openDocument(row)">详情</el-button>
               <el-button
-                v-if="row.sourceType === 'UPLOAD'"
+                v-if="canDeleteDocument(row)"
                 link
                 type="danger"
                 @click.stop="deleteDocument(row)"
@@ -318,7 +318,7 @@ const searchResults = ref<RagSearchResultView[]>([])
 const searchQuery = ref('湛江近海有哪些高保护等级物种？')
 const folderPath = ref('')
 const externalSource = ref('OBIS')
-const externalQuery = ref('Sousa chinensis')
+const externalQuery = ref('中华白海豚')
 const webUrls = ref('')
 const multiFileInputRef = ref<HTMLInputElement | null>(null)
 
@@ -339,7 +339,6 @@ const sourceTypeOptions = [
   { label: '观测记录', value: 'OBSERVATION' },
   { label: '生态系统', value: 'ECOSYSTEM' },
   { label: 'AI 科研报告', value: 'AI_REPORT' },
-  { label: 'AI 复核工单', value: 'AI_REVIEW_TICKET' },
   { label: '上传文档', value: 'UPLOAD' },
   { label: 'OBIS 公开数据', value: 'EXTERNAL_OBIS' },
   { label: 'GBIF 公开数据', value: 'EXTERNAL_GBIF' },
@@ -373,6 +372,10 @@ function statusType(value: string) {
   if (value === 'FAILED') return 'danger'
   if (value === 'PENDING') return 'warning'
   return 'info'
+}
+
+function canDeleteDocument(row: RagDocumentView) {
+  return row.sourceType === 'UPLOAD' || row.sourceType?.startsWith('EXTERNAL_')
 }
 
 function formatScore(value: number) {
@@ -456,7 +459,7 @@ async function deleteDocument(row: RagDocumentView) {
     if (selected.value?.document.id === row.id) {
       selected.value = null
     }
-    await loadDocuments()
+    await Promise.all([loadDocuments(), loadQdrantStatus()])
     ElMessage.success('知识文档已删除')
   } catch (error) {
     if (error !== 'cancel') {

@@ -39,13 +39,18 @@ gsmv:
     low-confidence-threshold: 0.68
     assistant-observation-limit: 60
     assistant-species-limit: 20
+    embedding:
+      provider: ${AI_EMBEDDING_PROVIDER:ollama}
     bailian:
       enabled: true
       api-key: ${BAILIAN_API_KEY:${DASHSCOPE_API_KEY:}}
       base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
       vision-model: qwen-vl-plus
-      embedding-model: text-embedding-v4
-      embedding-dimension: 1024
+    ollama:
+      enabled: true
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      embedding-model: ${OLLAMA_EMBEDDING_MODEL:bge-m3}
+      embedding-dimension: ${OLLAMA_EMBEDDING_DIMENSION:1024}
     deepseek:
       enabled: true
       api-key: ${DEEPSEEK_API_KEY:}
@@ -59,8 +64,11 @@ gsmv:
       url: ${QDRANT_URL:http://localhost:6333}
       collection: ${QDRANT_COLLECTION:gsmv_rag_chunks}
     embedding:
-      model: text-embedding-v4
+      model: bge-m3
       dimension: 1024
+    iucn:
+      base-url: ${IUCN_API_BASE_URL:https://api.iucnredlist.org/api/v4}
+      api-token: ${IUCN_API_TOKEN:}
     ingest:
       max-file-size: 50MB
       allowed-domains:
