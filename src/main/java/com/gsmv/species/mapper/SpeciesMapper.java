@@ -50,10 +50,10 @@ public interface SpeciesMapper {
                 AND s.status = #{status}
               </if>
               <if test='protectionLevel != null and protectionLevel != ""'>
-                AND s.protection_level = #{protectionLevel}
+                AND s.protection_level LIKE CONCAT('%', #{protectionLevel}, '%')
               </if>
               <if test='iucnStatus != null and iucnStatus != ""'>
-                AND s.iucn_status = #{iucnStatus}
+                AND UPPER(s.iucn_status) LIKE CONCAT('%', UPPER(#{iucnStatus}), '%')
               </if>
               <if test='distributionKeyword != null and distributionKeyword != ""'>
                 AND (
@@ -99,10 +99,10 @@ public interface SpeciesMapper {
                 AND s.status = #{status}
               </if>
               <if test='protectionLevel != null and protectionLevel != ""'>
-                AND s.protection_level = #{protectionLevel}
+                AND s.protection_level LIKE CONCAT('%', #{protectionLevel}, '%')
               </if>
               <if test='iucnStatus != null and iucnStatus != ""'>
-                AND s.iucn_status = #{iucnStatus}
+                AND UPPER(s.iucn_status) LIKE CONCAT('%', UPPER(#{iucnStatus}), '%')
               </if>
               <if test='distributionKeyword != null and distributionKeyword != ""'>
                 AND (

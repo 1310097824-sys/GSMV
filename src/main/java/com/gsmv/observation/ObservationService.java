@@ -18,6 +18,7 @@ import com.gsmv.observation.mapper.ObservationMapper;
 import com.gsmv.observation.model.Observation;
 import com.gsmv.security.CurrentUser;
 import com.gsmv.security.SecurityUtils;
+import com.gsmv.species.dto.SpeciesRow;
 import com.gsmv.species.mapper.SpeciesMapper;
 import com.gsmv.versioning.EntityVersionService;
 import com.gsmv.versioning.dto.EntityVersionView;
@@ -117,7 +118,7 @@ public class ObservationService {
 
     @Transactional
     public ObservationDetailView create(ObservationSaveRequest request) {
-        List<ObservationSpeciesInput> normalizedSpeciesItems = validateAndNormalize(request);
+        List<ObservationSpeciesInput> normalizedSpeciesItems = validateAndNormalize(request, Set.of());
         CurrentUser currentUser = SecurityUtils.requireCurrentUser();
         Observation observation = toObservation(request, currentUser.userId());
         observationMapper.insert(observation);
@@ -145,7 +146,8 @@ public class ObservationService {
         if (existing == null) {
             throw new NotFoundException("观测记录不存在");
         }
-        List<ObservationSpeciesInput> normalizedSpeciesItems = validateAndNormalize(request);
+        Set<Long> existingSpeciesIds = existingSpeciesIds(id);
+        List<ObservationSpeciesInput> normalizedSpeciesItems = validateAndNormalize(request, existingSpeciesIds);
         ObservationVersionSnapshot beforeSnapshot = ObservationVersionSnapshot.fromDetail(getDetail(id));
         Observation observation = toObservation(request, existing.getObserverUserId());
         observation.setId(id);
@@ -205,8 +207,11 @@ public class ObservationService {
         );
         Observation existing = observationMapper.findById(id);
         ObservationVersionSnapshot beforeSnapshot = existing == null ? null : ObservationVersionSnapshot.fromDetail(getDetail(id));
+        Set<Long> existingSpeciesIds = existing == null ? Set.of() : existingSpeciesIds(id);
+        ObservationSaveRequest targetRequest = targetSnapshot.toSaveRequest();
+        List<ObservationSpeciesInput> normalizedSpeciesItems = validateAndNormalize(targetRequest, existingSpeciesIds);
 
-        Observation observation = toObservation(targetSnapshot.toSaveRequest(), targetSnapshot.observerUserId());
+        Observation observation = toObservation(targetRequest, targetSnapshot.observerUserId());
         observation.setId(id);
         if (existing == null) {
             observationMapper.insertWithId(observation);
@@ -214,7 +219,7 @@ public class ObservationService {
             observationMapper.update(observation);
             observationMapper.deleteSpeciesByObservationId(id);
         }
-        replaceSpeciesItems(id, targetSnapshot.toSaveRequest().speciesItems());
+        replaceSpeciesItems(id, normalizedSpeciesItems);
 
         ObservationDetailView detailView = getDetail(id);
         ObservationVersionSnapshot afterSnapshot = ObservationVersionSnapshot.fromDetail(detailView);
@@ -254,7 +259,14 @@ public class ObservationService {
         }
     }
 
-    private List<ObservationSpeciesInput> validateAndNormalize(ObservationSaveRequest request) {
+    private Set<Long> existingSpeciesIds(Long observationId) {
+        return observationMapper.findSpeciesViews(observationId).stream()
+                .map(com.gsmv.observation.dto.ObservationSpeciesView::speciesId)
+                .filter(Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
+    }
+
+    private List<ObservationSpeciesInput> validateAndNormalize(ObservationSaveRequest request, Set<Long> existingSpeciesIds) {
         if (ecosystemMapper.findById(request.ecosystemId()) == null) {
             throw new NotFoundException("生态系统不存在");
         }
@@ -281,8 +293,16 @@ public class ObservationService {
             if (!seenSpeciesIds.add(item.speciesId())) {
                 throw new BusinessException(ErrorCode.BAD_REQUEST, "同一条观测记录中不能重复关联相同物种", HttpStatus.BAD_REQUEST);
             }
-            if (speciesMapper.findViewById(item.speciesId()) == null) {
+            SpeciesRow species = speciesMapper.findViewById(item.speciesId());
+            if (species == null) {
                 throw new NotFoundException("关联物种不存在: " + item.speciesId());
+            }
+            if (!Objects.equals(species.status(), 1) && !existingSpeciesIds.contains(item.speciesId())) {
+                throw new BusinessException(
+                        ErrorCode.BAD_REQUEST,
+                        "归档物种不能新增为观测记录关联项，请先启用该物种或选择其他可用物种",
+                        HttpStatus.BAD_REQUEST
+                );
             }
 
             normalizedItems.add(new ObservationSpeciesInput(item.speciesId(), item.countEstimated(), behavior, comment));

@@ -537,6 +537,10 @@ public class RagKnowledgeService {
                 markSourceDeleted(SOURCE_SPECIES, id);
                 return;
             }
+            if (!Integer.valueOf(1).equals(row.status())) {
+                markSourceDeleted(SOURCE_SPECIES, id);
+                return;
+            }
             indexSystemSource(SOURCE_SPECIES, id, buildSpeciesTitle(row), buildSpeciesText(row), true);
         } catch (RuntimeException ignored) {
             // RAG indexing must not block core data maintenance.

@@ -435,7 +435,7 @@ async function loadSpeciesOptions() {
   if (!canWrite.value) {
     return
   }
-  const pageData = await fetchSpecies({ page: 1, size: 200 })
+  const pageData = await fetchSpecies({ status: 1, page: 1, size: 200 })
   speciesOptions.value = pageData.items
 }
 

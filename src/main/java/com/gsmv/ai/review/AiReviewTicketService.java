@@ -170,6 +170,13 @@ public class AiReviewTicketService {
         String finalScientificName = normalizeNullable(request.finalScientificName());
         if (finalSpeciesId != null) {
             SpeciesDetailView species = speciesService.getSpecies(finalSpeciesId);
+            if (!Integer.valueOf(1).equals(species.status())) {
+                throw new BusinessException(
+                        ErrorCode.BAD_REQUEST,
+                        "归档物种不能作为复核结论关联物种，请先启用该物种或选择其他可用物种",
+                        HttpStatus.BAD_REQUEST
+                );
+            }
             finalChineseName = firstNonBlank(species.chineseName(), finalChineseName);
             finalScientificName = firstNonBlank(species.scientificName(), finalScientificName);
         }

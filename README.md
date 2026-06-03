@@ -1,42 +1,40 @@
-# GSMV 海洋生物多样性管理平台
+# GSMV 海洋生物多样性智能管理系统
 
-GSMV 是一套面向海洋生物多样性管理、生态观测、物种档案维护、智能问答、RAG 知识中台和科研报告生成的全栈系统。
+GSMV（Global Species & Marine Vision）是一套面向海洋生物多样性管理、生态观测、物种档案维护、智能问答、RAG 知识检索和科研报告生成的全栈 Web 系统。系统以 Spring Boot 后端、Vue 3 前端、MySQL 数据库、Qdrant 向量库和大模型服务为基础，将传统数据管理能力与 AI 辅助识别、检索增强生成、人工复核和科研分析能力结合起来。
 
-当前版本：`v1.5`
+当前版本：`v1.6`
 
-## 版本亮点
+## v1.6 版本重点
 
-`v1.5` 重点完成了智能模块和 RAG 知识链路的真实化：
+- 重写 README，修复原文档中文乱码，补充当前系统的部署、模块、RAG、测试和版本说明。
+- 智能模块功能闭环进一步完善，覆盖 AI 助手、AI 识图、RAG 知识中台、AI 复核工单、观测智能分析和 AI 科研报告。
+- RAG 文档详情支持查看每个知识分块的完整内容、摘要、元数据和向量化状态，便于追溯 AI 回答证据来源。
+- 物种归档语义增强：归档物种不再允许被新观测记录或 AI 复核结论继续关联，历史记录保留可读状态。
+- 物种保护等级和 IUCN 状态筛选增强，支持更符合中文输入习惯的保护等级查询。
+- AI 复核工单保留为独立业务流程，不再作为普通 RAG 知识文档混入知识库列表。
+- AI 助手按用户保存独立对话历史，刷新页面后仍可恢复当前用户的历史问答。
+- RAG 向量模型采用本地 Ollama `bge-m3`，Qdrant collection 默认使用 1024 维 Cosine 向量。
+- 增加智能模块 ER 图 Mermaid 文件：`docs/ai-module-er.drawio.mmd`。
 
-- AI 助手支持更自然的通用问答，回答前会先做 RAG 检索，但不会把闲聊或常识问题强行转成系统统计。
-- AI 助手对话历史持久化到数据库，每个登录用户拥有独立历史记录，刷新页面后不会丢失。
-- 向量模型切换为本地 Ollama `bge-m3`，Qdrant collection 使用 1024 维 Cosine 向量。
-- RAG 知识中台支持上传文档、本地文件夹导入、OBIS、GBIF、WoRMS、IUCN 和网页文档采集。
-- IUCN Red List 改为真实 API 采集，导入评估等级、种群趋势、栖息地、威胁、保护措施和引用信息。
-- WoRMS、GBIF、OBIS 外部采集改为结构化知识摘要，不再把原始 JSON 摘要直接塞进 RAG 文档。
-- 复核工单从 RAG 知识库中移除，复核工单仍保留自己的业务页面和证据快照，但不再作为知识文档参与检索。
-- RAG 证据排序优化：物种介绍、保护状态、分布和栖息地类问题优先展示 IUCN、WoRMS 等正式外部来源。
-- 证据来源链接支持直接打开 `/rag-knowledge?document=xxx` 对应的 RAG 文档详情。
-- 实验六测试脚本补齐，白盒、功能、集成、性能测试脚本可执行并生成 Excel 报告。
+## 核心能力
 
-## 功能模块
-
-| 模块 | 能力 |
+| 模块 | 能力说明 |
 | --- | --- |
 | 用户与权限 | 登录、注册申请、管理员审核、角色权限、个人资料、审计日志 |
-| 物种档案 | 物种增删改查、分类阶元、保护等级、IUCN 状态、图片、视频、参考文献 |
+| 物种档案 | 物种增删改查、分类阶元、保护等级、IUCN 状态、图片视频、参考文献、归档管理 |
 | 生态系统 | 近海、珊瑚礁、红树林、海草床等生态系统档案维护 |
 | 观测记录 | 观测时间、地点、坐标、生态系统、观测人员、环境参数、物种数量和行为记录 |
-| 生态地图 | 基于 Leaflet 展示观测点和生态系统点位，支持国内外底图策略 |
+| 生态地图 | 基于 Leaflet 展示观测点和生态系统点位，支持多种底图策略 |
 | 统计报表 | 物种分布、观测活动、分类占比、保护等级、生态系统统计、Excel/PDF 导出 |
 | AI 助手 | DeepSeek 问答、RAG 检索增强、SSE 流式输出、用户级对话历史、证据溯源 |
-| AI 识图 | 调用阿里云百炼视觉模型识别海洋生物图片，并结合 RAG 证据做结果校准 |
-| AI 档案补全 | 根据中文名、学名或描述补全分类、形态、习性、分布等字段 |
-| AI 润色翻译 | 对物种档案文本进行专业润色和中英文翻译 |
+| AI 图像识别 | 调用阿里云百炼视觉模型识别海洋生物图片，并结合 RAG 证据校验结果 |
+| 物种智能补全 | 根据中文名、学名或描述补全分类、形态、习性、分布和保护状态 |
+| 文本润色与翻译 | 对物种档案文本进行专业润色和多语言翻译 |
+| 观测智能分析 | 根据时间、坐标、环境参数和关联物种生成标签、异常提示和质量建议 |
 | AI 复核工单 | 保存低置信度识图结果、候选项、RAG 证据快照和人工复核结论 |
 | AI 科研报告 | 基于系统统计和 RAG 证据生成科研简报，支持历史查看和 PDF 导出 |
-| RAG 知识中台 | 统一管理系统数据、上传文档、外部知识、向量化分块和检索测试 |
-| 数据版本回溯 | 物种档案和观测记录变更留痕，支持查看历史和回滚 |
+| RAG 知识中台 | 管理系统数据、上传文档、外部知识、向量化分块、Qdrant 状态和检索测试 |
+| 数据版本回溯 | 物种档案和观测记录变更留痕，支持查看历史版本 |
 
 ## 技术栈
 
@@ -61,7 +59,7 @@ GSMV 是一套面向海洋生物多样性管理、生态观测、物种档案维
 | Node.js | 20 或更高 |
 | npm | 10 或更高 |
 | MySQL | 8.0 或更高 |
-| Docker Desktop | 可选，用于运行 Qdrant |
+| Docker Desktop | 用于运行 Qdrant |
 | Ollama | 用于本地 `bge-m3` 向量模型 |
 
 ## 快速启动
@@ -74,7 +72,7 @@ CREATE DATABASE IF NOT EXISTS gsmv
   DEFAULT COLLATE utf8mb4_unicode_ci;
 ```
 
-默认数据库连接在 [src/main/resources/application.yml](src/main/resources/application.yml) 中：
+默认数据库连接位于 `src/main/resources/application.yml`：
 
 ```yaml
 spring:
@@ -84,7 +82,7 @@ spring:
     password: 123456
 ```
 
-Flyway 会在后端启动时自动执行 `src/main/resources/db/migration` 下的迁移脚本。
+后端启动时 Flyway 会自动执行 `src/main/resources/db/migration` 下的迁移脚本。
 
 ### 2. 准备本地向量模型
 
@@ -93,17 +91,34 @@ ollama pull bge-m3
 ollama serve
 ```
 
-系统默认使用：
+默认配置：
 
 ```text
 Ollama 地址：http://localhost:11434
 Embedding 模型：bge-m3
-向量维度：1024
+Embedding 维度：1024
 ```
 
-### 3. 配置 AI Key
+### 3. 启动 Qdrant
 
-不要把真实 API Key 写入仓库文件。可以使用环境变量：
+如果使用一键启动脚本，脚本会自动尝试启动或创建 `gsmv-qdrant` 容器。也可以手动启动：
+
+```powershell
+docker run -d --name gsmv-qdrant -p 6333:6333 qdrant/qdrant
+```
+
+默认 Qdrant 配置：
+
+```text
+地址：http://localhost:6333
+Collection：gsmv_rag_chunks
+距离：Cosine
+维度：1024
+```
+
+### 4. 配置 AI Key
+
+不要把真实 API Key 写入仓库文件。建议使用环境变量：
 
 ```powershell
 setx BAILIAN_API_KEY "your-bailian-key"
@@ -112,21 +127,19 @@ setx DEEPSEEK_API_KEY "your-deepseek-key"
 setx IUCN_API_TOKEN "your-iucn-token"
 ```
 
-也可以直接运行启动脚本，脚本会弹出输入框收集百炼和 DeepSeek Key。IUCN Token 会从环境变量读取。
-
-### 4. 一键启动
+### 5. 一键启动
 
 ```powershell
 .\start-gsmv.cmd
 ```
 
-启动脚本会自动处理：
+启动脚本会处理：
 
 - 停止旧的 `8080` 和 `5173` 端口进程。
 - 启动后端和前端。
-- 如果 Docker 可用，自动启动或创建 `gsmv-qdrant` 容器。
-- 打开登录页。
-- 将日志写入 `.gsmv-runtime/logs`。
+- 在 Docker 可用时启动或创建 `gsmv-qdrant` 容器。
+- 打开登录页面。
+- 将运行日志写入 `.gsmv-runtime/logs`。
 
 停止系统：
 
@@ -164,9 +177,22 @@ npm install
 npm run dev
 ```
 
+前端构建：
+
+```powershell
+cd frontend
+npm.cmd run build
+```
+
+后端测试：
+
+```powershell
+.\mvnw.cmd test
+```
+
 ## RAG 知识中台
 
-RAG 是系统智能模块的证据层。当前接入范围包括：
+RAG 是系统智能模块的证据层，当前接入范围包括：
 
 - 物种档案、观测记录、生态系统、AI 科研报告。
 - 上传的 PDF、DOCX、TXT、MD 文档。
@@ -186,17 +212,9 @@ RAG 是系统智能模块的证据层。当前接入范围包括：
 -> AI 助手、识图、报告、补全等模块召回证据
 ```
 
-Qdrant 默认配置：
+页面中的“文档详情”和“分块详情”展示的是 MySQL 中保存的原始可读文本、摘要、元数据和向量化状态；Qdrant 中保存的是对应分块的向量点。
 
-```text
-容器名：gsmv-qdrant
-地址：http://localhost:6333
-Collection：gsmv_rag_chunks
-距离：Cosine
-维度：1024
-```
-
-常用检查命令：
+常用 Qdrant 检查命令：
 
 ```powershell
 Invoke-RestMethod http://localhost:6333/collections/gsmv_rag_chunks | ConvertTo-Json -Depth 10
@@ -214,13 +232,13 @@ Invoke-RestMethod -Method Post `
 
 ## AI 助手运行逻辑
 
-AI 助手的主流程：
+AI 助手主流程：
 
 ```text
 前端发送问题
 -> JWT 鉴权
 -> 后端识别问题意图
--> 先做 RAG 检索
+-> 先进行 RAG 检索
 -> 同时读取必要的系统业务数据
 -> DeepSeek 结合上下文生成自然语言回答
 -> 保存当前用户的对话历史
@@ -230,11 +248,28 @@ AI 助手的主流程：
 说明：
 
 - 日常问题、常识问题和开放式问题会按通用助手方式回答。
-- 物种介绍、保护状态、分布、栖息地等问题会优先展示 IUCN 和 WoRMS 证据。
+- 物种介绍、保护状态、分布、栖息地等问题会优先结合系统物种档案和 IUCN、WoRMS 等正式外部来源。
 - “打开证据来源”会跳转到具体业务页面或具体 RAG 文档详情。
-- 对话历史保存在 `ai_assistant_message` 表中，不同用户互不影响。
+- 对话历史保存到 `ai_assistant_message` 表，不同用户互不影响。
 
-## 外部知识采集说明
+## AI 图像识别与复核闭环
+
+图像识别主流程：
+
+```text
+上传海洋生物图片
+-> 文件类型校验
+-> 阿里云百炼视觉模型识别候选物种
+-> 使用候选中文名/学名进行 RAG 检索
+-> 结合置信度和证据冲突判断是否需要人工复核
+-> 可创建 AI 复核工单
+-> 复核人员查看图片、候选项和证据快照
+-> 提交确认、不匹配或无法确认结论
+```
+
+归档物种不能作为新的复核结论关联对象；历史记录仍保留原有关联信息，便于追溯。
+
+## 外部知识采集
 
 | 来源 | 用途 | 说明 |
 | --- | --- | --- |
@@ -244,58 +279,7 @@ AI 助手的主流程：
 | OBIS | 海洋观测出现记录摘要 | 用于海洋出现记录补充 |
 | WEB_PDF | 白名单网页文档 | 支持 PDF、DOCX、TXT、MD |
 
-外部采集到的数据会先转成可读文本块，再向量化。页面里的“文档详情”展示的是 MySQL 中保存的原始可读文本块，不是 Qdrant 里的向量数组。
-
-## 实验六测试脚本
-
-实验六脚本位于 [scripts/experiment6](scripts/experiment6)。
-
-可生成 Excel 测试报告：
-
-```powershell
-scripts\experiment6\run_all_excel_reports.cmd
-```
-
-也可以单独运行：
-
-```powershell
-scripts\experiment6\run_whitebox_excel.cmd
-scripts\experiment6\run_functional_excel.cmd
-scripts\experiment6\run_integration_excel.cmd
-scripts\experiment6\run_performance_excel.cmd
-```
-
-白盒 JUnit 测试类：
-
-```text
-src/test/java/com/gsmv/ai/Experiment6WhiteboxExecutionTests.java
-```
-
-运行：
-
-```powershell
-.\mvnw.cmd -Dtest=Experiment6WhiteboxExecutionTests test
-```
-
-## 常用命令
-
-```powershell
-# 后端编译
-.\mvnw.cmd -DskipTests compile
-
-# 后端测试
-.\mvnw.cmd test
-
-# 实验六白盒测试
-.\mvnw.cmd -Dtest=Experiment6WhiteboxExecutionTests test
-
-# 前端构建
-cd frontend
-npm.cmd run build
-
-# 查看 Git 状态
-git status -sb
-```
+外部采集结果会先转成可读文本块，再进入分块和向量化流程。
 
 ## 前端路由
 
@@ -348,19 +332,66 @@ GSMV/
 └─ pom.xml
 ```
 
+## 实验六测试脚本
+
+实验六脚本位于 `scripts/experiment6`，可以生成 Excel 测试报告：
+
+```powershell
+scripts\experiment6\run_all_excel_reports.cmd
+```
+
+也可以单独运行：
+
+```powershell
+scripts\experiment6\run_whitebox_excel.cmd
+scripts\experiment6\run_functional_excel.cmd
+scripts\experiment6\run_integration_excel.cmd
+scripts\experiment6\run_performance_excel.cmd
+```
+
+白盒 JUnit 测试类：
+
+```text
+src/test/java/com/gsmv/ai/Experiment6WhiteboxExecutionTests.java
+```
+
+运行：
+
+```powershell
+.\mvnw.cmd -Dtest=Experiment6WhiteboxExecutionTests test
+```
+
+## 常用命令
+
+```powershell
+# 后端编译
+.\mvnw.cmd -DskipTests compile
+
+# 后端测试
+.\mvnw.cmd test
+
+# 前端构建
+cd frontend
+npm.cmd run build
+
+# 查看 Git 状态
+git status -sb
+```
+
 ## 安全约定
 
 - 不要把真实 API Key 写进 `application.yml`、README、脚本默认值或提交历史。
-- `.gitignore` 已忽略 `.env`、`frontend/.env`、运行日志、上传文件、构建产物和运行期目录。
+- `.gitignore` 应忽略 `.env`、`frontend/.env`、运行日志、上传文件、构建产物和运行期目录。
 - 如果 Key 曾经暴露在聊天、日志或 Git 历史中，应立即到服务商后台轮换。
-- 生产环境请修改数据库密码、JWT 密钥、CORS、上传目录、日志策略和 AI Key 注入方式。
+- 生产环境应修改数据库密码、JWT 密钥、CORS、上传目录、日志策略和 AI Key 注入方式。
 
 ## 版本记录
 
 | 版本 | 说明 |
 | --- | --- |
-| `v1.5` | 本地 `bge-m3` 向量、Qdrant 重建、真实 IUCN 导入、外部知识结构化、AI 助手用户级历史、RAG 证据排序和证据来源跳转、实验六脚本补齐 |
-| `v1.4` | 大规模 RAG 知识中台、Qdrant 向量检索、AI 助手自然问答、流式输出、数据库建表脚本 |
+| `v1.6` | README 正常中文化；RAG 分块详情；归档物种关联限制；保护等级筛选增强；AI 复核工单独立化；智能模块 ER 图补充 |
+| `v1.5` | 本地 `bge-m3` 向量、Qdrant 重建、真实 IUCN 导入、外部知识结构化、AI 助手用户级历史、RAG 证据排序和实验六脚本补齐 |
+| `v1.4` | RAG 知识中台、Qdrant 向量检索、AI 助手自然问答、SSE 流式输出、数据库建表脚本 |
 | `v1.3` | AI 科研报告、地图混合底图、启动脚本、版本回溯、AI 复核和 RAG 基础能力 |
 | `v1.2` | AI 增强服务、数据版本与回溯、物种和观测核心闭环 |
 | `v1.1` | 用户权限、物种档案、生态系统、观测记录、统计报表等基础模块 |

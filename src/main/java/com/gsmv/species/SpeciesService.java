@@ -94,8 +94,8 @@ public class SpeciesService {
         List<SpeciesView> items = speciesMapper.findPage(
                         normalizeNullable(keyword),
                         status,
-                        normalizeNullable(protectionLevel),
-                        normalizeNullable(iucnStatus),
+                        normalizeProtectionLevelFilter(protectionLevel),
+                        normalizeIucnStatusFilter(iucnStatus),
                         normalizeNullable(distributionKeyword),
                         taxonIds,
                         safeSize,
@@ -106,8 +106,8 @@ public class SpeciesService {
         long total = speciesMapper.count(
                 normalizeNullable(keyword),
                 status,
-                normalizeNullable(protectionLevel),
-                normalizeNullable(iucnStatus),
+                normalizeProtectionLevelFilter(protectionLevel),
+                normalizeIucnStatusFilter(iucnStatus),
                 normalizeNullable(distributionKeyword),
                 taxonIds
         );
@@ -465,6 +465,52 @@ public class SpeciesService {
         }
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private String normalizeProtectionLevelFilter(String value) {
+        String normalized = normalizeNullable(value);
+        if (normalized == null) {
+            return null;
+        }
+        String compact = normalized
+                .replace(" ", "")
+                .replace("　", "")
+                .replace("１", "1")
+                .replace("２", "2")
+                .toLowerCase(Locale.ROOT);
+        if (compact.contains("一级") || compact.contains("1级") || compact.equals("1") || compact.contains("一类")) {
+            return "一级";
+        }
+        if (compact.contains("二级") || compact.contains("2级") || compact.equals("2") || compact.contains("二类")) {
+            return "二级";
+        }
+        if (compact.contains("重点")) {
+            return "重点";
+        }
+        if (compact.contains("地方")) {
+            return "地方";
+        }
+        return normalized;
+    }
+
+    private String normalizeIucnStatusFilter(String value) {
+        String normalized = normalizeNullable(value);
+        if (normalized == null) {
+            return null;
+        }
+        String upper = normalized.trim().toUpperCase(Locale.ROOT);
+        return switch (upper) {
+            case "极危", "CRITICAL", "CRITICALLYENDANGERED", "CRITICALLY ENDANGERED" -> "CR";
+            case "濒危", "ENDANGERED" -> "EN";
+            case "易危", "VULNERABLE" -> "VU";
+            case "近危", "NEARTHREATENED", "NEAR THREATENED" -> "NT";
+            case "无危", "低危", "LEASTCONCERN", "LEAST CONCERN" -> "LC";
+            case "数据缺乏", "数据不足", "DATADEFICIENT", "DATA DEFICIENT" -> "DD";
+            case "未评估", "NOTEVALUATED", "NOT EVALUATED" -> "NE";
+            case "灭绝", "EXTINCT" -> "EX";
+            case "野外灭绝", "EXTINCTINTHEWILD", "EXTINCT IN THE WILD" -> "EW";
+            default -> upper;
+        };
     }
 
     private BigDecimal normalizeDecimal(BigDecimal value) {

@@ -185,6 +185,7 @@
                 <div>
                   <strong>#{{ chunk.chunkIndex + 1 }} {{ chunk.title }}</strong>
                   <span>{{ chunk.characterCount }} 字</span>
+                  <el-button link type="primary" @click="openChunkDetail(chunk)">详情</el-button>
                 </div>
                 <p>{{ chunk.summary || chunk.content }}</p>
               </article>
@@ -263,6 +264,45 @@
         </el-card>
       </aside>
     </section>
+
+    <el-dialog
+      v-model="chunkDetailVisible"
+      class="rag-chunk-dialog"
+      width="780px"
+      append-to-body
+      destroy-on-close
+    >
+      <template #header>
+        <div class="rag-chunk-dialog__header">
+          <span>知识分块详情</span>
+          <strong v-if="selectedChunk">#{{ selectedChunk.chunkIndex + 1 }} {{ selectedChunk.title }}</strong>
+        </div>
+      </template>
+
+      <template v-if="selectedChunk">
+        <div class="rag-chunk-dialog__meta">
+          <span>{{ sourceTypeLabel(selectedChunk.sourceType) }}</span>
+          <span>{{ selectedChunk.characterCount }} 字</span>
+          <span>{{ selectedChunk.embeddingStatus || 'EMBEDDING_UNKNOWN' }}</span>
+          <span>{{ selectedChunk.createdAt }}</span>
+        </div>
+
+        <section v-if="selectedChunk.summary" class="rag-chunk-dialog__section">
+          <strong>分块摘要</strong>
+          <p>{{ selectedChunk.summary }}</p>
+        </section>
+
+        <section class="rag-chunk-dialog__section">
+          <strong>完整分块知识</strong>
+          <pre>{{ selectedChunk.content }}</pre>
+        </section>
+
+        <section v-if="selectedChunk.embeddingError" class="rag-chunk-dialog__section rag-chunk-dialog__section--warning">
+          <strong>向量化错误</strong>
+          <p>{{ selectedChunk.embeddingError }}</p>
+        </section>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -290,6 +330,7 @@ import {
 } from '@/api/rag'
 import type {
   QdrantStatusView,
+  RagChunkView,
   RagDocumentDetailView,
   RagDocumentView,
   RagIndexJobView,
@@ -309,6 +350,8 @@ const ingesting = ref(false)
 const searched = ref(false)
 const rows = ref<RagDocumentView[]>([])
 const selected = ref<RagDocumentDetailView | null>(null)
+const selectedChunk = ref<RagChunkView | null>(null)
+const chunkDetailVisible = ref(false)
 const jobs = ref<RagIndexJobView[]>([])
 const ingestJobs = ref<RagIngestJobView[]>([])
 const ingestItems = ref<RagIngestItemView[]>([])
@@ -380,6 +423,11 @@ function canDeleteDocument(row: RagDocumentView) {
 
 function formatScore(value: number) {
   return Number.isFinite(value) ? value.toFixed(2) : '0.00'
+}
+
+function openChunkDetail(chunk: RagChunkView) {
+  selectedChunk.value = chunk
+  chunkDetailVisible.value = true
 }
 
 async function loadDocuments() {
@@ -851,6 +899,92 @@ onMounted(() => {
 .rag-search-results footer span {
   color: #62e8ff;
   font-size: 12px;
+}
+
+.rag-chunks article > div {
+  align-items: flex-start;
+}
+
+.rag-chunks article .el-button {
+  flex: 0 0 auto;
+}
+
+:deep(.rag-chunk-dialog) {
+  border: 1px solid rgba(116, 220, 255, 0.24);
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, rgba(17, 47, 99, 0.98), rgba(5, 18, 54, 0.98)),
+    radial-gradient(circle at 88% 0%, rgba(84, 218, 255, 0.18), transparent 36%);
+  box-shadow: 0 28px 90px rgba(0, 7, 34, 0.48);
+}
+
+.rag-chunk-dialog__header {
+  display: grid;
+  gap: 6px;
+  padding-right: 32px;
+}
+
+.rag-chunk-dialog__header span {
+  color: #6deaff;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+}
+
+.rag-chunk-dialog__header strong {
+  color: #f7fcff;
+  font-size: 18px;
+  line-height: 1.4;
+}
+
+.rag-chunk-dialog__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.rag-chunk-dialog__meta span {
+  padding: 5px 9px;
+  border: 1px solid rgba(109, 234, 255, 0.22);
+  border-radius: 8px;
+  color: rgba(224, 242, 255, 0.8);
+  background: rgba(15, 45, 92, 0.62);
+  font-size: 12px;
+}
+
+.rag-chunk-dialog__section {
+  padding: 14px;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 8px;
+  background: rgba(5, 18, 54, 0.68);
+}
+
+.rag-chunk-dialog__section + .rag-chunk-dialog__section {
+  margin-top: 12px;
+}
+
+.rag-chunk-dialog__section strong {
+  color: #f7fcff;
+}
+
+.rag-chunk-dialog__section p,
+.rag-chunk-dialog__section pre {
+  margin: 10px 0 0;
+  color: rgba(224, 242, 255, 0.78);
+  line-height: 1.75;
+}
+
+.rag-chunk-dialog__section pre {
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+.rag-chunk-dialog__section--warning {
+  border-color: rgba(255, 188, 87, 0.36);
 }
 
 .rag-search-box {

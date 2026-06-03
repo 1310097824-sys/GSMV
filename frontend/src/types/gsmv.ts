@@ -144,6 +144,7 @@ export interface ObservationSpeciesView {
   speciesId: number
   scientificName: string
   chineseName?: string
+  status?: number
   countEstimated?: number
   behavior?: string
   comment?: string

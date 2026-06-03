@@ -207,6 +207,7 @@ public interface ObservationMapper {
               os.species_id,
               t.scientific_name,
               t.chinese_name,
+              s.status,
               os.count_estimated,
               os.behavior,
               os.comment

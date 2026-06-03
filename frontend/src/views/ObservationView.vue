@@ -191,10 +191,11 @@
         <div v-for="(item, index) in form.speciesItems" :key="index" class="species-list__row">
           <el-select v-model="item.speciesId" filterable placeholder="选择物种" class="species-list__species">
             <el-option
-              v-for="species in speciesOptions"
+              v-for="species in selectableSpeciesOptions"
               :key="species.id"
-              :label="`${species.scientificName}${species.chineseName ? ` / ${species.chineseName}` : ''}`"
+              :label="speciesOptionLabel(species)"
               :value="species.id"
+              :disabled="species.status !== 1"
             />
           </el-select>
           <el-input-number v-model="item.countEstimated" :min="1" placeholder="数量" class="species-list__count" />
@@ -340,9 +341,17 @@ import type {
   EntityVersionView,
   ObservationDetailView,
   ObservationSpeciesInput,
+  ObservationSpeciesView,
   ObservationView,
   SpeciesView,
 } from '@/types/gsmv'
+
+interface SpeciesSelectOption {
+  id: number
+  scientificName: string
+  chineseName?: string
+  status: number
+}
 
 const authStore = useAuthStore()
 
@@ -358,7 +367,9 @@ const rollbackingVersionId = ref<number | null>(null)
 const rows = ref<ObservationView[]>([])
 const ecosystemOptions = ref<Ecosystem[]>([])
 const speciesOptions = ref<SpeciesView[]>([])
+const archivedSpeciesOptions = ref<SpeciesSelectOption[]>([])
 const defaultEcosystemId = ref<number | undefined>()
+const originalSpeciesIds = ref<Set<number>>(new Set())
 const aiAnalyzing = ref(false)
 const aiAnalysis = ref<AiObservationAnalysisResponse | null>(null)
 const qualityChecking = ref(false)
@@ -368,6 +379,23 @@ let stopDataSync: (() => void) | undefined
 
 const canWrite = computed(() => authStore.authorities.includes('OBS_WRITE'))
 const detailEnvironmentEntries = computed(() => observationEnvironmentEntries(detail.value?.envJson))
+const selectableSpeciesOptions = computed<SpeciesSelectOption[]>(() => {
+  const options = new Map<number, SpeciesSelectOption>()
+  speciesOptions.value.forEach((item) => {
+    options.set(item.id, {
+      id: item.id,
+      scientificName: item.scientificName,
+      chineseName: item.chineseName,
+      status: item.status,
+    })
+  })
+  archivedSpeciesOptions.value.forEach((item) => {
+    if (!options.has(item.id)) {
+      options.set(item.id, item)
+    }
+  })
+  return Array.from(options.values())
+})
 
 const query = reactive({
   ecosystemId: undefined as number | undefined,
@@ -405,6 +433,8 @@ function resetForm() {
   form.locationName = DEFAULT_ECOSYSTEM_NAME
   form.note = ''
   form.speciesItems = []
+  archivedSpeciesOptions.value = []
+  originalSpeciesIds.value = new Set()
   applyEnvironment(createEmptyObservationEnvironment())
   resetAiAnalysis()
 }
@@ -421,6 +451,8 @@ function applyEnvironment(source: ReturnType<typeof createEmptyObservationEnviro
 }
 
 function fillForm(detailData: ObservationDetailView) {
+  originalSpeciesIds.value = new Set((detailData.speciesItems || []).map((item) => item.speciesId))
+  syncArchivedSpeciesOptions(detailData.speciesItems || [])
   form.ecosystemId = detailData.ecosystemId
   form.observedAt = detailData.observedAt
   form.locationLat = detailData.locationLat
@@ -437,10 +469,27 @@ function fillForm(detailData: ObservationDetailView) {
   resetAiAnalysis()
 }
 
+function syncArchivedSpeciesOptions(items: ObservationSpeciesView[]) {
+  const activeIds = new Set(speciesOptions.value.map((item) => item.id))
+  archivedSpeciesOptions.value = items
+    .filter((item) => item.status !== 1 || !activeIds.has(item.speciesId))
+    .map((item) => ({
+      id: item.speciesId,
+      scientificName: item.scientificName,
+      chineseName: item.chineseName,
+      status: item.status ?? 0,
+    }))
+}
+
+function speciesOptionLabel(species: SpeciesSelectOption) {
+  const name = `${species.scientificName}${species.chineseName ? ` / ${species.chineseName}` : ''}`
+  return species.status === 1 ? name : `${name}（已归档）`
+}
+
 async function loadOptions() {
   const [ecosystems, speciesPage] = await Promise.all([
     fetchAllEcosystems(),
-    fetchSpecies({ page: 1, size: 200 }),
+    fetchSpecies({ status: 1, page: 1, size: 200 }),
   ])
   ecosystemOptions.value = ecosystems
   speciesOptions.value = speciesPage.items
@@ -544,6 +593,10 @@ function normalizeSpeciesItems() {
     if (seenSpeciesIds.has(item.speciesId)) {
       throw new Error('同一条观测记录中不能重复关联相同物种')
     }
+    const selectedSpecies = selectableSpeciesOptions.value.find((option) => option.id === item.speciesId)
+    if (selectedSpecies?.status !== 1 && !originalSpeciesIds.value.has(item.speciesId)) {
+      throw new Error('归档物种不能新增为观测记录关联项，请先启用该物种或选择其他可用物种')
+    }
 
     seenSpeciesIds.add(item.speciesId)
     normalizedItems.push({
@@ -581,7 +634,7 @@ async function runAiAnalysis() {
   const speciesItems = form.speciesItems
     .filter((item) => item.speciesId)
     .map((item) => {
-      const species = speciesOptions.value.find((option) => option.id === item.speciesId)
+      const species = selectableSpeciesOptions.value.find((option) => option.id === item.speciesId)
       return {
         speciesId: item.speciesId,
         scientificName: species?.scientificName,

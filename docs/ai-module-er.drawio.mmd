@@ -1,0 +1,188 @@
+erDiagram
+    SYS_USER ||--o{ AI_ASSISTANT_MESSAGE : creates
+    SYS_USER ||--o{ AI_REVIEW_TICKET : submits
+    SYS_USER ||--o{ AI_REVIEW_TICKET : reviews
+    SYS_USER ||--o{ AI_RESEARCH_REPORT : generates
+    SYS_USER ||--o{ RAG_DOCUMENT : uploads
+    SYS_USER ||--o{ RAG_INDEX_JOB : creates
+    SYS_USER ||--o{ RAG_INGEST_JOB : creates
+    SYS_USER ||--o{ MEDIA_FILE : uploads
+
+    MEDIA_FILE ||--o{ AI_REVIEW_TICKET : image
+    MEDIA_FILE ||--o{ RAG_DOCUMENT : document_file
+    MEDIA_FILE ||--o{ RAG_INGEST_ITEM : collected_file
+
+    SPECIES ||--o{ AI_REVIEW_TICKET : final_species
+
+    RAG_DOCUMENT ||--o{ RAG_CHUNK : chunks
+    RAG_INGEST_JOB ||--o{ RAG_INGEST_ITEM : items
+    RAG_DOCUMENT ||--o{ RAG_INGEST_ITEM : generated_by
+
+    RAG_SOURCE ||..o{ RAG_INGEST_JOB : source_code
+    RAG_SOURCE ||..o{ RAG_INGEST_ITEM : source_code
+
+    SPECIES ||..o{ RAG_DOCUMENT : source_species
+    OBSERVATION ||..o{ RAG_DOCUMENT : source_observation
+    ECOSYSTEM ||..o{ RAG_DOCUMENT : source_ecosystem
+    AI_REVIEW_TICKET ||..o{ RAG_DOCUMENT : source_review_ticket
+    AI_RESEARCH_REPORT ||..o{ RAG_DOCUMENT : source_ai_report
+
+    SYS_USER {
+      bigint id PK
+      varchar username
+      varchar display_name
+      tinyint status
+    }
+
+    MEDIA_FILE {
+      bigint id PK
+      varchar business_type
+      bigint business_id
+      varchar original_filename
+      varchar content_type
+      bigint uploaded_by FK
+      datetime uploaded_at
+    }
+
+    SPECIES {
+      bigint id PK
+      bigint taxon_id
+      varchar protection_level
+      varchar iucn_status
+      tinyint status
+    }
+
+    OBSERVATION {
+      bigint id PK
+      bigint ecosystem_id
+      bigint observer_user_id
+      datetime observed_at
+      decimal location_lat
+      decimal location_lng
+    }
+
+    ECOSYSTEM {
+      bigint id PK
+      varchar name
+      varchar type
+    }
+
+    AI_ASSISTANT_MESSAGE {
+      bigint id PK
+      bigint user_id FK
+      varchar role
+      text content
+      text structured_query_json
+      text evidence_json
+      tinyint cache_hit
+      datetime created_at
+    }
+
+    AI_REVIEW_TICKET {
+      bigint id PK
+      varchar source_type
+      varchar status
+      bigint submitted_by FK
+      bigint reviewer_user_id FK
+      bigint image_media_id FK
+      varchar likely_chinese_name
+      varchar likely_scientific_name
+      decimal confidence
+      tinyint needs_human_review
+      text candidate_json
+      text rag_evidence_json
+      bigint final_species_id FK
+      varchar resolution_code
+      datetime reviewed_at
+    }
+
+    AI_RESEARCH_REPORT {
+      bigint id PK
+      varchar report_type
+      int days
+      varchar title
+      text summary
+      text highlights_json
+      text risks_json
+      text recommendations_json
+      text evidence_json
+      bigint created_by FK
+      datetime created_at
+    }
+
+    RAG_SOURCE {
+      bigint id PK
+      varchar code
+      varchar name
+      varchar source_type
+      varchar base_url
+      tinyint enabled
+      text config_json
+    }
+
+    RAG_DOCUMENT {
+      bigint id PK
+      varchar source_type
+      bigint source_id
+      bigint media_id FK
+      varchar title
+      varchar status
+      int chunk_count
+      text metadata_json
+      bigint uploaded_by FK
+      datetime created_at
+    }
+
+    RAG_CHUNK {
+      bigint id PK
+      bigint document_id FK
+      varchar source_type
+      bigint source_id
+      int chunk_index
+      varchar title
+      varchar summary
+      text content
+      text embedding_json
+      varchar vector_point_id
+      varchar embedding_model
+      int embedding_dimension
+      varchar embedding_status
+      int character_count
+    }
+
+    RAG_INDEX_JOB {
+      bigint id PK
+      varchar job_type
+      varchar status
+      varchar target_source_type
+      bigint target_source_id
+      int total_documents
+      int total_chunks
+      bigint created_by FK
+      datetime started_at
+    }
+
+    RAG_INGEST_JOB {
+      bigint id PK
+      varchar job_type
+      varchar status
+      varchar source_code
+      varchar title
+      int total_items
+      int processed_items
+      bigint created_by FK
+      datetime started_at
+    }
+
+    RAG_INGEST_ITEM {
+      bigint id PK
+      bigint job_id FK
+      varchar source_type
+      varchar source_code
+      varchar external_id
+      varchar source_url
+      bigint media_id FK
+      bigint rag_document_id FK
+      varchar title
+      varchar status
+    }

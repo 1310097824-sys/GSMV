@@ -23,8 +23,28 @@
           style="width: 240px"
           placeholder="按门纲目科属种筛选"
         />
-        <el-input v-model="query.protectionLevel" placeholder="保护等级" clearable style="max-width: 150px" />
-        <el-input v-model="query.iucnStatus" placeholder="濒危状态" clearable style="max-width: 150px" />
+        <el-select
+          v-model="query.protectionLevel"
+          placeholder="保护等级"
+          clearable
+          filterable
+          allow-create
+          default-first-option
+          style="width: 170px"
+        >
+          <el-option v-for="option in protectionLevelOptions" :key="option" :label="option" :value="option" />
+        </el-select>
+        <el-select
+          v-model="query.iucnStatus"
+          placeholder="濒危状态"
+          clearable
+          filterable
+          allow-create
+          default-first-option
+          style="width: 150px"
+        >
+          <el-option v-for="option in iucnStatusOptions" :key="option.value" :label="option.label" :value="option.value" />
+        </el-select>
         <el-input v-model="query.distributionKeyword" placeholder="分布区域 / 地理范围" clearable style="max-width: 220px" />
         <el-select v-model="query.status" placeholder="状态" clearable style="width: 140px">
           <el-option label="启用" :value="1" />
@@ -482,6 +502,25 @@ const taxonCascaderProps = {
   label: 'label',
   children: 'children',
 }
+
+const protectionLevelOptions = [
+  '国家一级保护',
+  '国家一级保护野生动物',
+  '国家二级保护',
+  '国家二级保护野生动物',
+  '地方重点保护',
+  '地方重要经济物种',
+]
+
+const iucnStatusOptions = [
+  { label: 'CR 极危', value: 'CR' },
+  { label: 'EN 濒危', value: 'EN' },
+  { label: 'VU 易危', value: 'VU' },
+  { label: 'NT 近危', value: 'NT' },
+  { label: 'LC 无危', value: 'LC' },
+  { label: 'DD 数据缺乏', value: 'DD' },
+  { label: 'NE 未评估', value: 'NE' },
+]
 
 const query = reactive({
   keyword: '',
