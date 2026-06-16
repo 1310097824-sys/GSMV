@@ -3,6 +3,8 @@ package com.gsmv.ai.review;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.gsmv.ai.agent.AgentOrchestratorService;
+import com.gsmv.ai.agent.AgentTask;
 import com.gsmv.ai.dto.SpeciesAiDtos;
 import com.gsmv.ai.rag.RagKnowledgeService;
 import com.gsmv.ai.rag.dto.RagDtos;
@@ -23,7 +25,9 @@ import com.gsmv.species.dto.SpeciesDetailView;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.Objects;
 import org.springframework.http.HttpStatus;
@@ -46,6 +50,7 @@ public class AiReviewTicketService {
     private final RagKnowledgeService ragKnowledgeService;
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
+    private final AgentOrchestratorService agentOrchestratorService;
 
     public AiReviewTicketService(
             AiReviewTicketMapper ticketMapper,
@@ -53,7 +58,8 @@ public class AiReviewTicketService {
             SpeciesService speciesService,
             RagKnowledgeService ragKnowledgeService,
             AuditService auditService,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            AgentOrchestratorService agentOrchestratorService
     ) {
         this.ticketMapper = ticketMapper;
         this.mediaFileService = mediaFileService;
@@ -61,6 +67,7 @@ public class AiReviewTicketService {
         this.ragKnowledgeService = ragKnowledgeService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
+        this.agentOrchestratorService = agentOrchestratorService;
     }
 
     @Transactional
@@ -85,11 +92,37 @@ public class AiReviewTicketService {
         ticket.setInitialRecognitionJson(writeJson(request));
         ticket.setRagEvidenceJson(writeJson(defaultList(request.ragEvidence())));
         ticket.setReviewEvidenceJson(writeJson(List.of()));
+        ticket.setAgentRunId(request.agentRunId());
         ticket.setSubmitNote(normalizeNullable(request.submitNote()));
         ticketMapper.insert(ticket);
 
         MediaFile image = mediaFileService.store(AI_REVIEW_IMAGE_BUSINESS_TYPE, ticket.getId(), file, currentUser.userId());
         ticketMapper.updateImageMediaId(ticket.getId(), image.getId());
+        Long agentRunId = ticket.getAgentRunId();
+        if (agentRunId == null) {
+            agentRunId = agentOrchestratorService.execute(new AgentTask(
+                    AgentOrchestratorService.WORKFLOW_SPECIES_IDENTIFY,
+                    "AI_REVIEW_TICKET",
+                    ticket.getId(),
+                    firstNonBlank(ticket.getLikelyChineseName(), ticket.getLikelyScientificName(), ticket.getReasoning()),
+                    RagKnowledgeService.SCENARIO_IMAGE_IDENTIFICATION,
+                    mapOf(
+                            "likelyChineseName", ticket.getLikelyChineseName(),
+                            "likelyScientificName", ticket.getLikelyScientificName(),
+                            "confidence", ticket.getConfidence() == null ? null : ticket.getConfidence().doubleValue(),
+                            "needsHumanReview", ticket.getNeedsHumanReview() != null && ticket.getNeedsHumanReview() == 1,
+                            "reasoning", ticket.getReasoning(),
+                            "candidates", defaultList(request.candidates()),
+                            "relatedSpeciesRecords", defaultList(request.relatedSpeciesRecords()),
+                            "ragEvidence", defaultList(request.ragEvidence()),
+                            "conflictWarnings", defaultList(request.conflictWarnings())
+                    ),
+                    List.of()
+            )).id();
+            ticketMapper.updateAgentRunId(ticket.getId(), agentRunId);
+        } else {
+            agentOrchestratorService.attachSubject(agentRunId, "AI_REVIEW_TICKET", ticket.getId());
+        }
         ragKnowledgeService.syncAiReviewTicket(ticket.getId());
 
         auditService.record(
@@ -320,6 +353,7 @@ public class AiReviewTicketService {
     }
 
     private AiReviewTicketDtos.ReviewTicketDetailView toDetail(AiReviewTicket ticket) {
+        var agentRun = agentOrchestratorService.getRunSnapshot(ticket.getAgentRunId());
         return new AiReviewTicketDtos.ReviewTicketDetailView(
                 ticket.getId(),
                 ticket.getSourceType(),
@@ -348,7 +382,12 @@ public class AiReviewTicketService {
                 ticket.getReviewNote(),
                 ticket.getReviewedAt(),
                 ticket.getCreatedAt(),
-                ticket.getUpdatedAt()
+                ticket.getUpdatedAt(),
+                ticket.getAgentRunId(),
+                agentRun,
+                agentRun == null ? List.of() : agentRun.steps(),
+                agentRun == null ? null : agentRun.verificationStatus(),
+                agentRun == null ? null : agentRun.confidence()
         );
     }
 
@@ -429,5 +468,17 @@ public class AiReviewTicketService {
 
     private String escapeJson(String value) {
         return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private Map<String, Object> mapOf(Object... pairs) {
+        Map<String, Object> values = new LinkedHashMap<>();
+        for (int index = 0; index + 1 < pairs.length; index += 2) {
+            Object key = pairs[index];
+            Object value = pairs[index + 1];
+            if (key != null && value != null) {
+                values.put(String.valueOf(key), value);
+            }
+        }
+        return values;
     }
 }

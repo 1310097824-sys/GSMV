@@ -12,6 +12,7 @@ export async function createAiReviewTicket(payload: {
   ragEvidence?: AiIdentifyImageResponse['ragEvidence']
   ragConclusion?: string
   conflictWarnings?: string[]
+  agentRunId?: number
   submitNote?: string
 }, file: File) {
   const formData = new FormData()

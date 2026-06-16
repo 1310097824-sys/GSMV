@@ -133,6 +133,13 @@
             <el-button type="primary" plain @click="applyIdentifyResult">带入新建表单</el-button>
           </div>
 
+          <AgentTracePanel
+            v-if="identifyResult.agentSteps?.length"
+            :run-id="identifyResult.agentRunId"
+            :steps="identifyResult.agentSteps"
+            :title="`识图协作轨迹 #${identifyResult.agentRunId || '-'}`"
+          />
+
           <div v-if="identifyResult.candidates.length" class="identify-section">
             <h3>候选列表</h3>
             <div class="candidate-list">
@@ -438,6 +445,7 @@ import {
   translateSpeciesProfile,
 } from '@/api/ai'
 import { createAiReviewTicket } from '@/api/aiReview'
+import AgentTracePanel from '@/components/AgentTracePanel.vue'
 import {
   createSpecies,
   deleteSpecies,
@@ -862,6 +870,7 @@ async function submitReviewTicket() {
         ragEvidence: identifyResult.value.ragEvidence,
         ragConclusion: identifyResult.value.ragConclusion,
         conflictWarnings: identifyResult.value.conflictWarnings,
+        agentRunId: identifyResult.value.agentRunId,
         submitNote: manualReviewNote.value || undefined,
       },
       file,

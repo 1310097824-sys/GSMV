@@ -1,10 +1,11 @@
 package com.gsmv.ai;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.gsmv.ai.agent.AgentOrchestratorService;
+import com.gsmv.ai.agent.AgentTask;
+import com.gsmv.ai.agent.dto.AgentDtos;
 import com.gsmv.ai.dto.ObservationAiDtos;
 import com.gsmv.ai.rag.RagKnowledgeService;
-import com.gsmv.ai.rag.RagSearchHit;
 import com.gsmv.audit.service.AuditService;
 import com.gsmv.observation.ObservationService;
 import com.gsmv.observation.dto.ObservationDetailView;
@@ -16,8 +17,10 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -25,86 +28,75 @@ import org.springframework.util.StringUtils;
 @Service
 public class ObservationAiService {
 
-    private final AiModelGateway aiModelGateway;
     private final SpeciesService speciesService;
     private final ObservationService observationService;
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
-    private final RagKnowledgeService ragKnowledgeService;
+    private final AgentOrchestratorService agentOrchestratorService;
 
     public ObservationAiService(
-            AiModelGateway aiModelGateway,
             SpeciesService speciesService,
             ObservationService observationService,
             AuditService auditService,
             ObjectMapper objectMapper,
-            RagKnowledgeService ragKnowledgeService
+            AgentOrchestratorService agentOrchestratorService
     ) {
-        this.aiModelGateway = aiModelGateway;
         this.speciesService = speciesService;
         this.observationService = observationService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
-        this.ragKnowledgeService = ragKnowledgeService;
+        this.agentOrchestratorService = agentOrchestratorService;
     }
 
     public ObservationAiDtos.AnalyzeObservationResponse analyze(ObservationAiDtos.AnalyzeObservationRequest request) {
         Set<String> tagSet = new LinkedHashSet<>(buildRuleTags(request));
         List<ObservationAiDtos.ObservationAnomaly> anomalies = buildAnomalies(request);
+        List<String> reviewNotes = buildRuleReviewNotes(request, anomalies);
+        String summary = buildRuleObservationSummary(request, anomalies);
 
-        JsonNode result = aiModelGateway.deepSeekJson(List.of(
-                AiModelGateway.message("system", """
-                        你是一名海洋观测记录分析助手。
-                        请根据观测时间、地点、生态系统、环境参数和物种信息生成标签与简短提示。
-                        返回内容必须是纯 JSON。
-                        """),
-                AiModelGateway.message("user", """
-                        观测信息：
-                        生态系统：%s
-                        观测时间：%s
-                        地点：%s
-                        坐标：%s, %s
-                        环境参数：%s
-                        备注：%s
-                        关联物种：%s
-                        已检测到的异常提示：%s
-                        RAG知识库参考：%s
-
-                        请返回 JSON：
-                        {
-                          "summary": "",
-                          "tags": [],
-                          "reviewNotes": []
-                        }
-                        规则：
-                        1. tags 限制在 3 到 6 个以内，使用简短中文标签。
-                        2. reviewNotes 用于提醒用户人工核实，可为空数组。
-                        3. 不要输出 Markdown。
-                        """.formatted(
-                        request.ecosystemName(),
-                        request.observedAt(),
-                        safe(request.locationName()),
-                        request.locationLat(),
-                        request.locationLng(),
-                        environmentSummary(request.environment()),
-                        safe(request.note()),
-                        speciesSummary(request.speciesItems()),
-                        anomalySummary(anomalies),
-                        ragContext(request.ecosystemName() + " " + safe(request.locationName()) + " " + speciesSummary(request.speciesItems()))
-                ))
-        ));
-
-        tagSet.addAll(stringList(result.path("tags")));
-        List<String> reviewNotes = stringList(result.path("reviewNotes"));
         auditService.record(SecurityUtils.requireCurrentUser().userId(), "AI", "ANALYZE_OBSERVATION", "OBSERVATION", null, true,
                 "{\"ecosystem\":\"" + escapeJson(request.ecosystemName()) + "\"}");
 
-        return new ObservationAiDtos.AnalyzeObservationResponse(
-                text(result, "summary"),
+        ObservationAiDtos.AnalyzeObservationResponse response = new ObservationAiDtos.AnalyzeObservationResponse(
+                summary,
                 List.copyOf(tagSet),
                 reviewNotes,
                 anomalies,
                 !anomalies.isEmpty() || !reviewNotes.isEmpty()
+        );
+        AgentDtos.AgentRunView run = agentOrchestratorService.execute(new AgentTask(
+                AgentOrchestratorService.WORKFLOW_OBSERVATION_QA,
+                "OBSERVATION_DRAFT",
+                null,
+                firstNonBlank(request.ecosystemName(), request.locationName(), speciesSummary(request.speciesItems()), "observation draft"),
+                RagKnowledgeService.SCENARIO_OBSERVATION_ANALYSIS,
+                mapOf(
+                        "summary", response.summary(),
+                        "tags", response.tags(),
+                        "reviewNotes", response.reviewNotes(),
+                        "anomalies", response.anomalies(),
+                        "needsReview", response.needsReview(),
+                        "speciesItems", request.speciesItems(),
+                        "ecosystemName", request.ecosystemName(),
+                        "observedAt", request.observedAt(),
+                        "locationLat", request.locationLat(),
+                        "locationLng", request.locationLng(),
+                        "locationName", request.locationName(),
+                        "environment", request.environment(),
+                        "note", request.note()
+                ),
+                List.of()
+        ));
+        return new ObservationAiDtos.AnalyzeObservationResponse(
+                response.summary(),
+                response.tags(),
+                response.reviewNotes(),
+                response.anomalies(),
+                response.needsReview(),
+                run.id(),
+                run.steps(),
+                run.verificationStatus(),
+                run.confidence()
         );
     }
 
@@ -120,24 +112,24 @@ public class ObservationAiService {
             score -= 6;
             issues.add(new ObservationAiDtos.QualityIssue(
                     "LOW",
-                    "地点说明不完整",
-                    "观测记录只有经纬度，缺少可读的地点说明。",
-                    "补充海域、站位、样线或近岸参照点，方便后续复核。"
+                    "Location description incomplete",
+                    "The record only has coordinates and lacks a readable location description.",
+                    "Add sea area, station, transect, or nearby reference point for later review."
             ));
         } else {
-            strengths.add("地点说明和坐标信息完整。");
+            strengths.add("Location description and coordinates are complete.");
         }
 
         if (detail.speciesItems() == null || detail.speciesItems().isEmpty()) {
             score -= 22;
             issues.add(new ObservationAiDtos.QualityIssue(
                     "HIGH",
-                    "未关联观测物种",
-                    "这条观测没有关联任何物种，难以支撑物种分布或生态系统统计。",
-                    "至少关联一个现场确认或待确认的物种，并填写估算数量或行为。"
+                    "No observed species linked",
+                    "The record has no species association, so distribution and ecosystem statistics are weak.",
+                    "Link at least one confirmed or pending species and fill estimated count or behavior."
             ));
         } else {
-            strengths.add("已关联 " + detail.speciesItems().size() + " 个物种，可进入分布和生态统计。");
+            strengths.add("Linked " + detail.speciesItems().size() + " species for distribution and ecosystem statistics.");
         }
 
         ObservationAiDtos.EnvironmentSnapshot environment = request.environment();
@@ -145,12 +137,12 @@ public class ObservationAiService {
             score -= 16;
             issues.add(new ObservationAiDtos.QualityIssue(
                     "MEDIUM",
-                    "环境参数缺失",
-                    "水温、盐度、pH、溶解氧等环境参数缺少记录。",
-                    "补充关键环境参数后，AI 异常检测和生态系统分析会更可靠。"
+                    "Environment parameters missing",
+                    "Water temperature, salinity, pH, dissolved oxygen, or related parameters are missing.",
+                    "Add key environment parameters so anomaly checks and ecosystem analysis are more reliable."
             ));
         } else {
-            strengths.add("已记录环境参数，可用于生态条件复核。");
+            strengths.add("Environment parameters are recorded and can support ecological review.");
             score -= addEnvironmentIssues(environment, issues);
         }
 
@@ -158,19 +150,19 @@ public class ObservationAiService {
             score -= 8;
             issues.add(new ObservationAiDtos.QualityIssue(
                     "LOW",
-                    "备注偏少",
-                    "缺少现场背景、采样方式或照片依据等说明。",
-                    "补充天气、样线、拍摄情况或人工确认依据。"
+                    "Notes are sparse",
+                    "The record lacks field background, sampling method, or photo evidence notes.",
+                    "Add weather, transect, photo context, or manual confirmation evidence."
             ));
         } else {
-            strengths.add("备注中已有现场补充信息。");
+            strengths.add("Field notes contain supplemental context.");
         }
 
         for (ObservationAiDtos.ObservationAnomaly anomaly : anomalies) {
             score -= "HIGH".equalsIgnoreCase(anomaly.severity()) ? 18 : 10;
             issues.add(new ObservationAiDtos.QualityIssue(
                     anomaly.severity(),
-                    "物种分布冲突",
+                    "Species distribution conflict",
                     anomaly.message(),
                     anomaly.suggestion()
             ));
@@ -179,17 +171,17 @@ public class ObservationAiService {
         score = Math.max(0, Math.min(100, score));
         String grade = score >= 85 ? "HIGH" : score >= 70 ? "MEDIUM" : "LOW";
         if (strengths.isEmpty()) {
-            strengths.add("基础观测记录已保存，可继续补充证据提高质量。");
+            strengths.add("The base observation record is saved; more evidence can improve quality.");
         }
         String summary = switch (grade) {
-            case "HIGH" -> "这条观测记录信息较完整，适合直接进入统计分析和地图展示。";
-            case "MEDIUM" -> "这条观测记录基本可用，但仍建议补充关键字段或复核提示项。";
-            default -> "这条观测记录存在明显缺口，建议先补充信息或发起人工核验。";
+            case "HIGH" -> "This observation is complete enough for statistics and map display.";
+            case "MEDIUM" -> "This observation is usable, but key fields or review hints should be supplemented.";
+            default -> "This observation has clear gaps; supplement information or start manual review first.";
         };
 
         auditService.record(SecurityUtils.requireCurrentUser().userId(), "AI", "QUALITY_CHECK_OBSERVATION", "OBSERVATION", observationId, true,
                 "{\"score\":" + score + "}");
-        return new ObservationAiDtos.QualityCheckResponse(
+        ObservationAiDtos.QualityCheckResponse response = new ObservationAiDtos.QualityCheckResponse(
                 observationId,
                 score,
                 grade,
@@ -198,6 +190,82 @@ public class ObservationAiService {
                 issues,
                 score < 70 || issues.stream().anyMatch(issue -> "HIGH".equalsIgnoreCase(issue.severity()))
         );
+        AgentDtos.AgentRunView run = agentOrchestratorService.execute(new AgentTask(
+                AgentOrchestratorService.WORKFLOW_OBSERVATION_QA,
+                "OBSERVATION",
+                observationId,
+                firstNonBlank(detail.locationName(), detail.ecosystemName(), "observation #" + observationId),
+                RagKnowledgeService.SCENARIO_OBSERVATION_ANALYSIS,
+                mapOf(
+                        "score", response.score(),
+                        "grade", response.grade(),
+                        "summary", response.summary(),
+                        "strengths", response.strengths(),
+                        "issues", response.issues(),
+                        "anomalies", anomalies,
+                        "needsReview", response.needsReview(),
+                        "speciesItems", request.speciesItems(),
+                        "ecosystemName", request.ecosystemName(),
+                        "observedAt", request.observedAt(),
+                        "locationLat", request.locationLat(),
+                        "locationLng", request.locationLng(),
+                        "locationName", request.locationName(),
+                        "environment", request.environment(),
+                        "note", request.note()
+                ),
+                List.of()
+        ));
+        return new ObservationAiDtos.QualityCheckResponse(
+                response.observationId(),
+                response.score(),
+                response.grade(),
+                response.summary(),
+                response.strengths(),
+                response.issues(),
+                response.needsReview(),
+                run.id(),
+                run.steps(),
+                run.verificationStatus(),
+                run.confidence()
+        );
+    }
+
+    private String buildRuleObservationSummary(
+            ObservationAiDtos.AnalyzeObservationRequest request,
+            List<ObservationAiDtos.ObservationAnomaly> anomalies
+    ) {
+        int speciesCount = request.speciesItems() == null ? 0 : request.speciesItems().size();
+        String location = firstNonBlank(request.locationName(), request.ecosystemName(), "unmarked location");
+        String observedAt = request.observedAt() == null ? "unmarked time" : request.observedAt().toString();
+        String anomalyText = anomalies == null || anomalies.isEmpty()
+                ? "no obvious distribution or environment anomaly"
+                : "found " + anomalies.size() + " review hint(s)";
+        return "Rule and system context analyzed " + location + " at " + observedAt
+                + "; \u5173\u8054\u7269\u79cd " + speciesCount + " \u4e2a; " + anomalyText + ".";
+    }
+
+    private List<String> buildRuleReviewNotes(
+            ObservationAiDtos.AnalyzeObservationRequest request,
+            List<ObservationAiDtos.ObservationAnomaly> anomalies
+    ) {
+        List<String> notes = new ArrayList<>();
+        if (!StringUtils.hasText(request.locationName())) {
+            notes.add("Add readable location, transect, or nearby reference point.");
+        }
+        if (request.speciesItems() == null || request.speciesItems().isEmpty()) {
+            notes.add("Link at least one confirmed or pending species.");
+        }
+        if (request.environment() == null || isEnvironmentEmpty(request.environment())) {
+            notes.add("Add water temperature, salinity, pH, dissolved oxygen, or depth.");
+        }
+        if (anomalies != null) {
+            anomalies.stream()
+                    .map(ObservationAiDtos.ObservationAnomaly::message)
+                    .filter(StringUtils::hasText)
+                    .limit(3)
+                    .forEach(notes::add);
+        }
+        return notes.stream().distinct().limit(6).toList();
     }
 
     private List<String> buildRuleTags(ObservationAiDtos.AnalyzeObservationRequest request) {
@@ -209,43 +277,43 @@ public class ObservationAiService {
         LocalDateTime observedAt = request.observedAt();
         int month = observedAt.getMonthValue();
         if (month >= 3 && month <= 5) {
-            tags.add("春季观测");
+            tags.add("spring observation");
         } else if (month >= 6 && month <= 8) {
-            tags.add("夏季观测");
+            tags.add("summer observation");
         } else if (month >= 9 && month <= 11) {
-            tags.add("秋季观测");
+            tags.add("autumn observation");
         } else {
-            tags.add("冬季观测");
+            tags.add("winter observation");
         }
 
         int hour = observedAt.getHour();
-        tags.add(hour >= 18 || hour < 6 ? "夜间观测" : "日间观测");
+        tags.add(hour >= 18 || hour < 6 ? "night observation" : "day observation");
 
         ObservationAiDtos.EnvironmentSnapshot environment = request.environment();
         if (environment != null) {
             if (compare(environment.salinity(), 35) >= 0) {
-                tags.add("高盐度环境");
+                tags.add("high salinity");
             } else if (compare(environment.salinity(), 20) <= 0 && environment.salinity() != null) {
-                tags.add("低盐度环境");
+                tags.add("low salinity");
             }
             if (compare(environment.waterTemperature(), 28) >= 0) {
-                tags.add("高温水域");
+                tags.add("warm water");
             } else if (compare(environment.waterTemperature(), 16) <= 0 && environment.waterTemperature() != null) {
-                tags.add("低温水域");
+                tags.add("cold water");
             }
             if (compare(environment.dissolvedOxygen(), 5) < 0 && environment.dissolvedOxygen() != null) {
-                tags.add("低溶氧提示");
+                tags.add("low dissolved oxygen");
             }
             if (compare(environment.depthMeters(), 30) >= 0) {
-                tags.add("深水观测");
+                tags.add("deep water");
             } else if (compare(environment.depthMeters(), 5) <= 0 && environment.depthMeters() != null) {
-                tags.add("浅水观测");
+                tags.add("shallow water");
             }
         }
 
         List<ObservationAiDtos.SpeciesObservationItem> items = request.speciesItems() == null ? List.of() : request.speciesItems();
         if (items.size() > 1) {
-            tags.add("多物种共现");
+            tags.add("multi species co-occurrence");
         }
         return tags;
     }
@@ -275,16 +343,16 @@ public class ObservationAiService {
                     anomalies.add(new ObservationAiDtos.ObservationAnomaly(
                             "HIGH",
                             displaySpeciesName(detail.chineseName(), detail.scientificName()),
-                            "观测点与档案分布点相距约 " + roundDistance(distanceKm) + " km，超出常规参考范围",
-                            "建议核对定位、物种选择或补充人工复核说明",
+                            "Observation point is about " + roundDistance(distanceKm) + " km from the species distribution reference.",
+                            "Check coordinates, species selection, or add manual review notes.",
                             distanceKm
                     ));
                 } else if (distanceKm >= 800) {
                     anomalies.add(new ObservationAiDtos.ObservationAnomaly(
                             "MEDIUM",
                             displaySpeciesName(detail.chineseName(), detail.scientificName()),
-                            "观测点与档案分布点相距约 " + roundDistance(distanceKm) + " km，建议确认是否属于迁移、扩散或误录",
-                            "建议补充现场照片、行为描述或专家确认意见",
+                            "Observation point is about " + roundDistance(distanceKm) + " km from the species distribution reference.",
+                            "Add field photos, behavior description, or expert confirmation.",
                             distanceKm
                     ));
                 }
@@ -346,103 +414,52 @@ public class ObservationAiService {
             penalty += 8;
             issues.add(new ObservationAiDtos.QualityIssue(
                     "MEDIUM",
-                    "核心水文参数不完整",
-                    "水温和盐度是判断海洋观测环境的重要基础字段。",
-                    "优先补齐水温和盐度，再补充 pH、溶解氧、透明度等参数。"
+                    "Core hydrology parameters incomplete",
+                    "Water temperature and salinity are key baseline fields for marine observations.",
+                    "Fill water temperature and salinity first, then pH, dissolved oxygen, and transparency."
             ));
         }
         if (environment.ph() != null && (compare(environment.ph(), 6.5) < 0 || compare(environment.ph(), 9.0) > 0)) {
             penalty += 10;
             issues.add(new ObservationAiDtos.QualityIssue(
                     "HIGH",
-                    "pH 数值异常",
-                    "当前 pH 超出常见海水观测范围。",
-                    "请核对仪器校准、单位和录入值。"
+                    "pH value abnormal",
+                    "The current pH is outside the usual seawater observation range.",
+                    "Check instrument calibration, unit, and entered value."
             ));
         }
         if (environment.dissolvedOxygen() != null && compare(environment.dissolvedOxygen(), 3) < 0) {
             penalty += 10;
             issues.add(new ObservationAiDtos.QualityIssue(
                     "HIGH",
-                    "溶解氧偏低",
-                    "溶解氧低于常规阈值，可能代表局部低氧环境或录入异常。",
-                    "建议复核采样时间、深度和现场仪器读数。"
+                    "Low dissolved oxygen",
+                    "Dissolved oxygen is below the regular threshold and may indicate local hypoxia or data entry error.",
+                    "Review sampling time, depth, and field instrument readings."
             ));
         }
         return penalty;
     }
 
-    private String environmentSummary(ObservationAiDtos.EnvironmentSnapshot environment) {
-        if (environment == null) {
-            return "未填写";
-        }
-        List<String> entries = new ArrayList<>();
-        addEntry(entries, "水温", environment.waterTemperature(), "°C");
-        addEntry(entries, "盐度", environment.salinity(), "‰");
-        addEntry(entries, "pH", environment.ph(), "");
-        addEntry(entries, "溶解氧", environment.dissolvedOxygen(), "mg/L");
-        addEntry(entries, "透明度", environment.transparency(), "m");
-        addEntry(entries, "水深", environment.depthMeters(), "m");
-        if (StringUtils.hasText(environment.weather())) {
-            entries.add("天气 " + environment.weather().trim());
-        }
-        if (StringUtils.hasText(environment.seaState())) {
-            entries.add("海况 " + environment.seaState().trim());
-        }
-        return entries.isEmpty() ? "未填写" : String.join("；", entries);
-    }
-
-    private void addEntry(List<String> entries, String label, BigDecimal value, String unit) {
-        if (value != null) {
-            entries.add(label + " " + value.stripTrailingZeros().toPlainString() + unit);
-        }
-    }
-
     private String speciesSummary(List<ObservationAiDtos.SpeciesObservationItem> items) {
         if (items == null || items.isEmpty()) {
-            return "未关联物种";
+            return "no linked species";
         }
         List<String> values = new ArrayList<>();
         for (ObservationAiDtos.SpeciesObservationItem item : items) {
             if (item == null) {
                 continue;
             }
-            String name = firstNonBlank(item.chineseName(), item.scientificName(), item.speciesId() == null ? "" : "物种#" + item.speciesId());
+            String name = firstNonBlank(item.chineseName(), item.scientificName(), item.speciesId() == null ? "" : "species#" + item.speciesId());
             StringBuilder builder = new StringBuilder(name);
             if (item.countEstimated() != null) {
-                builder.append("，约 ").append(item.countEstimated()).append(" 个体");
+                builder.append(", about ").append(item.countEstimated()).append(" individuals");
             }
             if (StringUtils.hasText(item.behavior())) {
-                builder.append("，行为：").append(item.behavior().trim());
+                builder.append(", behavior: ").append(item.behavior().trim());
             }
             values.add(builder.toString());
         }
-        return values.isEmpty() ? "未关联物种" : String.join("；", values);
-    }
-
-    private String anomalySummary(List<ObservationAiDtos.ObservationAnomaly> anomalies) {
-        if (anomalies.isEmpty()) {
-            return "暂未发现明显冲突";
-        }
-        List<String> values = new ArrayList<>();
-        for (ObservationAiDtos.ObservationAnomaly anomaly : anomalies) {
-            values.add(anomaly.speciesName() + "：" + anomaly.message());
-        }
-        return String.join("；", values);
-    }
-
-    private String ragContext(String query) {
-        if (!StringUtils.hasText(query)) {
-            return "无";
-        }
-        List<RagSearchHit> hits = ragKnowledgeService.retrieveForScenario(RagKnowledgeService.SCENARIO_OBSERVATION_ANALYSIS, query, 4);
-        if (hits.isEmpty()) {
-            return "无";
-        }
-        return hits.stream()
-                .map(hit -> hit.title() + "：" + firstNonBlank(hit.summary(), hit.content()))
-                .toList()
-                .toString();
+        return values.isEmpty() ? "no linked species" : String.join("; ", values);
     }
 
     private int compare(BigDecimal value, double compareTo) {
@@ -471,7 +488,7 @@ public class ObservationAiService {
         if (StringUtils.hasText(chineseName) && StringUtils.hasText(scientificName)) {
             return chineseName.trim() + " / " + scientificName.trim();
         }
-        return firstNonBlank(chineseName, scientificName, "未命名物种");
+        return firstNonBlank(chineseName, scientificName, "unnamed species");
     }
 
     private String firstNonBlank(String... values) {
@@ -483,30 +500,19 @@ public class ObservationAiService {
         return "";
     }
 
-    private List<String> stringList(JsonNode node) {
-        List<String> values = new ArrayList<>();
-        if (!node.isArray()) {
-            return values;
-        }
-        for (JsonNode item : node) {
-            String value = item.asText("").trim();
-            if (StringUtils.hasText(value)) {
-                values.add(value);
+    private String escapeJson(String value) {
+        return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private Map<String, Object> mapOf(Object... pairs) {
+        Map<String, Object> values = new LinkedHashMap<>();
+        for (int index = 0; index + 1 < pairs.length; index += 2) {
+            Object key = pairs[index];
+            Object value = pairs[index + 1];
+            if (key != null && value != null) {
+                values.put(String.valueOf(key), value);
             }
         }
         return values;
-    }
-
-    private String text(JsonNode node, String field) {
-        JsonNode fieldNode = node.path(field);
-        return fieldNode.isMissingNode() || fieldNode.isNull() ? "" : fieldNode.asText("").trim();
-    }
-
-    private String safe(String value) {
-        return value == null ? "" : value.trim();
-    }
-
-    private String escapeJson(String value) {
-        return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 }

@@ -109,6 +109,15 @@
               </div>
             </div>
           </div>
+
+          <AgentTracePanel
+            v-if="aiAnalysis.agentRunId || aiAnalysis.agentSteps?.length"
+            class="observation-agent-trace"
+            :run-id="aiAnalysis.agentRunId"
+            :steps="aiAnalysis.agentSteps || []"
+            title="观测分析协作轨迹"
+            eyebrow="Observation AI"
+          />
         </template>
         <el-empty v-else description="点击“生成分析建议”后，这里会展示标签和异常提示" />
       </el-card>
@@ -275,6 +284,15 @@
                 </div>
               </div>
             </div>
+
+            <AgentTracePanel
+              v-if="qualityResult.agentRunId || qualityResult.agentSteps?.length"
+              class="observation-agent-trace"
+              :run-id="qualityResult.agentRunId"
+              :steps="qualityResult.agentSteps || []"
+              title="观测质检协作轨迹"
+              eyebrow="Observation QA"
+            />
           </template>
 
           <el-empty v-else description="点击 AI 评分后展示质量分、风险项和补充建议。" :image-size="76" />
@@ -322,6 +340,7 @@ import {
   updateObservation,
 } from '@/api/observations'
 import { fetchSpecies } from '@/api/species'
+import AgentTracePanel from '@/components/AgentTracePanel.vue'
 import LeafletPicker from '@/components/LeafletPicker.vue'
 import VersionHistoryPanel from '@/components/VersionHistoryPanel.vue'
 import { DEFAULT_ECOSYSTEM_NAME, ZHANJIANG_OFFSHORE_CENTER } from '@/constants/ecosystem'
@@ -925,6 +944,10 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  margin-top: 14px;
+}
+
+.observation-agent-trace {
   margin-top: 14px;
 }
 

@@ -1,5 +1,6 @@
 package com.gsmv.ai.dto;
 
+import com.gsmv.ai.agent.dto.AgentDtos;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -61,8 +62,21 @@ public final class ObservationAiDtos {
             List<String> tags,
             List<String> reviewNotes,
             List<ObservationAnomaly> anomalies,
-            boolean needsReview
+            boolean needsReview,
+            Long agentRunId,
+            List<AgentDtos.AgentStepView> agentSteps,
+            String verificationStatus,
+            Double confidence
     ) {
+        public AnalyzeObservationResponse(
+                String summary,
+                List<String> tags,
+                List<String> reviewNotes,
+                List<ObservationAnomaly> anomalies,
+                boolean needsReview
+        ) {
+            this(summary, tags, reviewNotes, anomalies, needsReview, null, List.of(), null, null);
+        }
     }
 
     public record QualityIssue(
@@ -80,7 +94,22 @@ public final class ObservationAiDtos {
             String summary,
             List<String> strengths,
             List<QualityIssue> issues,
-            boolean needsReview
+            boolean needsReview,
+            Long agentRunId,
+            List<AgentDtos.AgentStepView> agentSteps,
+            String verificationStatus,
+            Double confidence
     ) {
+        public QualityCheckResponse(
+                Long observationId,
+                int score,
+                String grade,
+                String summary,
+                List<String> strengths,
+                List<QualityIssue> issues,
+                boolean needsReview
+        ) {
+            this(observationId, score, grade, summary, strengths, issues, needsReview, null, List.of(), null, null);
+        }
     }
 }

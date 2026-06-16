@@ -2,11 +2,11 @@ package com.gsmv.ai.report;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.gsmv.ai.AiModelGateway;
+import com.gsmv.ai.agent.AgentOrchestratorService;
+import com.gsmv.ai.agent.AgentTask;
+import com.gsmv.ai.agent.dto.AgentDtos;
 import com.gsmv.ai.rag.RagKnowledgeService;
-import com.gsmv.ai.rag.RagSearchHit;
 import com.gsmv.ai.report.dto.AiReportDtos;
 import com.gsmv.ai.report.export.AiReportPdfExporter;
 import com.gsmv.ai.report.mapper.AiReportMapper;
@@ -23,8 +23,11 @@ import com.gsmv.report.dto.NameValuePoint;
 import com.gsmv.security.CurrentUser;
 import com.gsmv.security.SecurityUtils;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,25 +38,25 @@ public class AiReportService {
 
     private final AiReportMapper aiReportMapper;
     private final ReportService reportService;
-    private final AiModelGateway aiModelGateway;
     private final RagKnowledgeService ragKnowledgeService;
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
+    private final AgentOrchestratorService agentOrchestratorService;
 
     public AiReportService(
             AiReportMapper aiReportMapper,
             ReportService reportService,
-            AiModelGateway aiModelGateway,
             RagKnowledgeService ragKnowledgeService,
             AuditService auditService,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            AgentOrchestratorService agentOrchestratorService
     ) {
         this.aiReportMapper = aiReportMapper;
         this.reportService = reportService;
-        this.aiModelGateway = aiModelGateway;
         this.ragKnowledgeService = ragKnowledgeService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
+        this.agentOrchestratorService = agentOrchestratorService;
     }
 
     @Transactional
@@ -61,19 +64,41 @@ public class AiReportService {
         CurrentUser currentUser = SecurityUtils.requireCurrentUser();
         int days = sanitizeDays(request.days());
         String reportType = normalizeReportType(request.reportType(), days);
-        GeneratedReport generated = generateWithAi(reportType, days);
+        GeneratedReport generated = generateBaselineReport(reportType, days);
+        AgentDtos.AgentRunView run = agentOrchestratorService.execute(new AgentTask(
+                AgentOrchestratorService.WORKFLOW_RESEARCH_REPORT,
+                "AI_RESEARCH_REPORT",
+                null,
+                generated.title() + " " + generated.summary(),
+                RagKnowledgeService.SCENARIO_REPORT,
+                mapOf(
+                        "reportType", reportType,
+                        "days", days,
+                        "title", generated.title(),
+                        "summary", generated.summary(),
+                        "highlights", generated.highlights(),
+                        "risks", generated.risks(),
+                        "recommendations", generated.recommendations(),
+                        "evidence", generated.evidence()
+                ),
+                List.of()
+        ));
+        GeneratedReport agentDraft = applyAgentDraft(generated, run.finalOutput());
 
         AiReport report = new AiReport();
         report.setReportType(reportType);
         report.setDays(days);
-        report.setTitle(generated.title());
-        report.setSummary(generated.summary());
-        report.setHighlightsJson(writeJson(generated.highlights()));
-        report.setRisksJson(writeJson(generated.risks()));
-        report.setRecommendationsJson(writeJson(generated.recommendations()));
-        report.setEvidenceJson(writeJson(generated.evidence()));
+        report.setTitle(agentDraft.title());
+        report.setSummary(agentDraft.summary());
+        report.setHighlightsJson(writeJson(agentDraft.highlights()));
+        report.setRisksJson(writeJson(agentDraft.risks()));
+        report.setRecommendationsJson(writeJson(agentDraft.recommendations()));
+        report.setEvidenceJson(writeJson(agentDraft.evidence()));
         report.setCreatedBy(currentUser.userId());
         aiReportMapper.insert(report);
+        report.setAgentRunId(run.id());
+        aiReportMapper.updateAgentRunId(report.getId(), run.id());
+        agentOrchestratorService.attachSubject(run.id(), "AI_RESEARCH_REPORT", report.getId());
         ragKnowledgeService.syncAiReport(report.getId());
 
         auditService.record(currentUser.userId(), "AI", "GENERATE_RESEARCH_REPORT", "AI_RESEARCH_REPORT", report.getId(), true,
@@ -103,94 +128,19 @@ public class AiReportService {
         return AiReportPdfExporter.export(getDetail(id));
     }
 
-    private GeneratedReport generateWithAi(String reportType, int days) {
+    private GeneratedReport generateBaselineReport(String reportType, int days) {
         DashboardSummary summary = reportService.dashboardSummary();
         List<NameValuePoint> trend = reportService.observationTrend(days);
-        List<NameValuePoint> observers = reportService.observationActivityByUser(days);
         List<EcosystemAnalyticsPoint> ecosystems = reportService.ecosystemAnalytics();
         List<NameValuePoint> protection = reportService.protectionLevelDistribution();
-        List<RagSearchHit> ragHits = ragKnowledgeService.retrieveForScenario(
-                RagKnowledgeService.SCENARIO_REPORT,
-                "海洋生物多样性科研报告 " + reportType + " 近" + days + "天 重点发现 风险 建议",
-                6
+        return new GeneratedReport(
+                defaultTitle(reportType, days),
+                fallbackSummary(summary, days),
+                fallbackHighlights(summary, trend, ecosystems),
+                fallbackRisks(summary, protection),
+                fallbackRecommendations(),
+                fallbackEvidence(summary, days)
         );
-        String context = buildContext(summary, trend, observers, ecosystems, protection, ragHits);
-
-        try {
-            JsonNode node = aiModelGateway.deepSeekJson(List.of(
-                    AiModelGateway.message("system", """
-                            你是海洋生物多样性科研报告助手。请基于系统统计数据生成简洁、可复核的中文科研简报。
-                            只返回 JSON，不要 Markdown。
-                            """),
-                    AiModelGateway.message("user", """
-                            报告类型：%s
-                            统计范围：近 %d 天
-                            系统数据：
-                            %s
-
-                            请返回 JSON：
-                            {
-                              "title": "",
-                              "summary": "",
-                              "highlights": [],
-                              "risks": [],
-                              "recommendations": [],
-                              "evidence": []
-                            }
-                            每个数组控制在 3 到 6 条，内容要能被科研人员直接复核。
-                            """.formatted(reportType, days, context))
-            ));
-            GeneratedReport generated = new GeneratedReport(
-                    firstNonBlank(text(node, "title"), defaultTitle(reportType, days)),
-                    firstNonBlank(text(node, "summary"), fallbackSummary(summary, days)),
-                    nonEmptyList(node.path("highlights"), fallbackHighlights(summary, trend, ecosystems)),
-                    nonEmptyList(node.path("risks"), fallbackRisks(summary, protection)),
-                    nonEmptyList(node.path("recommendations"), fallbackRecommendations()),
-                    nonEmptyList(node.path("evidence"), fallbackEvidence(summary, days, ragHits))
-            );
-            return generated;
-        } catch (RuntimeException ignored) {
-            return new GeneratedReport(
-                    defaultTitle(reportType, days),
-                    fallbackSummary(summary, days),
-                    fallbackHighlights(summary, trend, ecosystems),
-                    fallbackRisks(summary, protection),
-                    fallbackRecommendations(),
-                    fallbackEvidence(summary, days, ragHits)
-            );
-        }
-    }
-
-    private String buildContext(
-            DashboardSummary summary,
-            List<NameValuePoint> trend,
-            List<NameValuePoint> observers,
-            List<EcosystemAnalyticsPoint> ecosystems,
-            List<NameValuePoint> protection,
-            List<RagSearchHit> ragHits
-    ) {
-        List<String> lines = new ArrayList<>();
-        lines.add("物种总数=" + summary.totalSpecies() + "，观测记录=" + summary.totalObservations()
-                + "，生态系统=" + summary.totalEcosystems() + "，近7天观测=" + summary.recentObservationCount());
-        lines.add("近期趋势=" + summarizeNameValues(trend, 8));
-        lines.add("活跃人员=" + summarizeNameValues(observers, 5));
-        lines.add("保护等级=" + summarizeNameValues(protection, 5));
-        lines.add("生态系统=" + ecosystems.stream().limit(6)
-                .map(item -> item.ecosystemName() + "(" + item.observationCount() + "次观测/" + item.speciesCount() + "种)")
-                .toList());
-        if (!ragHits.isEmpty()) {
-            lines.add("RAG召回证据=" + ragHits.stream().limit(5)
-                    .map(item -> item.title() + "：" + item.summary())
-                    .toList());
-        }
-        return String.join("\n", lines);
-    }
-
-    private String summarizeNameValues(List<NameValuePoint> points, int limit) {
-        if (points == null || points.isEmpty()) {
-            return "暂无";
-        }
-        return points.stream().limit(limit).map(item -> item.name() + "=" + item.value()).toList().toString();
     }
 
     private List<String> fallbackHighlights(
@@ -230,16 +180,13 @@ public class AiReportService {
         );
     }
 
-    private List<String> fallbackEvidence(DashboardSummary summary, int days, List<RagSearchHit> ragHits) {
+    private List<String> fallbackEvidence(DashboardSummary summary, int days) {
         List<String> evidence = new ArrayList<>(List.of(
                 "统计范围：近 " + days + " 天",
                 "物种档案总数：" + summary.totalSpecies(),
                 "观测记录总数：" + summary.totalObservations(),
                 "生态系统总数：" + summary.totalEcosystems()
         ));
-        ragHits.stream().limit(4)
-                .map(item -> "RAG证据：" + item.title() + "（相似度 " + String.format(Locale.ROOT, "%.2f", item.score()) + "）")
-                .forEach(evidence::add);
         return evidence;
     }
 
@@ -274,6 +221,7 @@ public class AiReportService {
     }
 
     private AiReportDtos.AiReportDetailView toDetail(AiReport report) {
+        AgentDtos.AgentRunView agentRun = agentOrchestratorService.getRunSnapshot(report.getAgentRunId());
         return new AiReportDtos.AiReportDetailView(
                 report.getId(),
                 report.getReportType(),
@@ -286,7 +234,12 @@ public class AiReportService {
                 readStringList(report.getEvidenceJson()),
                 report.getCreatedBy(),
                 report.getCreatorName(),
-                report.getCreatedAt()
+                report.getCreatedAt(),
+                report.getAgentRunId(),
+                agentRun,
+                agentRun == null ? List.of() : agentRun.steps(),
+                agentRun == null ? null : agentRun.verificationStatus(),
+                agentRun == null ? null : agentRun.confidence()
         );
     }
 
@@ -306,24 +259,6 @@ public class AiReportService {
         return normalized;
     }
 
-    private String text(JsonNode node, String fieldName) {
-        JsonNode value = node.path(fieldName);
-        return value.isMissingNode() || value.isNull() ? "" : value.asText("").trim();
-    }
-
-    private List<String> nonEmptyList(JsonNode node, List<String> fallback) {
-        List<String> values = new ArrayList<>();
-        if (node.isArray()) {
-            for (JsonNode item : node) {
-                String value = item.asText("").trim();
-                if (StringUtils.hasText(value)) {
-                    values.add(value);
-                }
-            }
-        }
-        return values.isEmpty() ? fallback : values;
-    }
-
     private List<String> readStringList(String json) {
         if (!StringUtils.hasText(json)) {
             return List.of();
@@ -333,6 +268,55 @@ public class AiReportService {
         } catch (Exception ignored) {
             return List.of();
         }
+    }
+
+    private GeneratedReport applyAgentDraft(GeneratedReport fallback, Object finalOutput) {
+        Map<String, Object> output = asStringMap(finalOutput);
+        Map<String, Object> draft = asStringMap(output.get("finalDraft"));
+        if (draft.isEmpty()) {
+            return fallback;
+        }
+        return new GeneratedReport(
+                firstNonBlank(textValue(draft.get("title")), fallback.title()),
+                firstNonBlank(textValue(draft.get("summary")), fallback.summary()),
+                nonEmptyStringList(draft.get("highlights"), fallback.highlights()),
+                nonEmptyStringList(draft.get("risks"), fallback.risks()),
+                nonEmptyStringList(draft.get("recommendations"), fallback.recommendations()),
+                nonEmptyStringList(draft.get("evidence"), fallback.evidence())
+        );
+    }
+
+    private List<String> nonEmptyStringList(Object value, List<String> fallback) {
+        List<String> values = new ArrayList<>();
+        if (value instanceof Collection<?> collection) {
+            collection.stream()
+                    .map(this::textValue)
+                    .filter(StringUtils::hasText)
+                    .forEach(values::add);
+        } else if (value != null) {
+            String text = textValue(value);
+            if (StringUtils.hasText(text)) {
+                values.add(text);
+            }
+        }
+        return values.isEmpty() ? fallback : values;
+    }
+
+    private Map<String, Object> asStringMap(Object value) {
+        if (!(value instanceof Map<?, ?> map)) {
+            return Map.of();
+        }
+        Map<String, Object> values = new LinkedHashMap<>();
+        map.forEach((key, entryValue) -> {
+            if (key != null && entryValue != null) {
+                values.put(String.valueOf(key), entryValue);
+            }
+        });
+        return values;
+    }
+
+    private String textValue(Object value) {
+        return value == null ? "" : String.valueOf(value).trim();
     }
 
     private String writeJson(List<String> values) {
@@ -354,6 +338,18 @@ public class AiReportService {
 
     private String escapeJson(String value) {
         return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private Map<String, Object> mapOf(Object... pairs) {
+        Map<String, Object> values = new LinkedHashMap<>();
+        for (int index = 0; index + 1 < pairs.length; index += 2) {
+            Object key = pairs[index];
+            Object value = pairs[index + 1];
+            if (key != null && value != null) {
+                values.put(String.valueOf(key), value);
+            }
+        }
+        return values;
     }
 
     private record GeneratedReport(

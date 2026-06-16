@@ -1,5 +1,6 @@
 package com.gsmv.ai.dto;
 
+import com.gsmv.ai.agent.dto.AgentDtos;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import java.time.LocalDateTime;
@@ -55,8 +56,21 @@ public final class AssistantAiDtos {
             StructuredQuery structuredQuery,
             List<String> highlights,
             List<EvidenceItem> evidence,
-            boolean cacheHit
+            boolean cacheHit,
+            Long agentRunId,
+            List<AgentDtos.AgentStepView> agentSteps,
+            String verificationStatus,
+            Double confidence
     ) {
+        public ChatResponse(
+                String answer,
+                StructuredQuery structuredQuery,
+                List<String> highlights,
+                List<EvidenceItem> evidence,
+                boolean cacheHit
+        ) {
+            this(answer, structuredQuery, highlights, evidence, cacheHit, null, List.of(), null, null);
+        }
     }
 
     public record ChatHistoryItem(

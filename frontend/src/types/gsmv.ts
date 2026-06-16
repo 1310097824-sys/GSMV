@@ -35,6 +35,19 @@ export interface RoleOption {
   description: string
 }
 
+export interface PermissionOption {
+  id: number
+  code: string
+  name: string
+  description: string
+}
+
+export interface RolePermissionView extends RoleOption {
+  permissionCodes: string[]
+  userCount: number
+  builtIn: boolean
+}
+
 export interface UserView {
   id: number
   username: string
@@ -261,6 +274,58 @@ export interface MediaFile {
   uploadedAt: string
 }
 
+export interface AiAgentStepView {
+  id: number
+  runId: number
+  stepOrder: number
+  agentName: string
+  agentRole: string
+  status: string
+  summary?: string
+  input?: unknown
+  output?: Record<string, unknown> | unknown
+  evidence?: Array<Record<string, unknown>> | unknown
+  errorMessage?: string
+  confidence?: number
+  durationMs?: number
+  startedAt?: string
+  finishedAt?: string
+}
+
+export interface AiAgentRunView {
+  id: number
+  workflowType: string
+  status: string
+  subjectType?: string
+  subjectId?: number
+  userId?: number
+  username?: string
+  prompt?: string
+  summary?: string
+  verificationStatus?: string
+  confidence?: number
+  finalOutput?: Record<string, unknown> | unknown
+  startedAt?: string
+  finishedAt?: string
+  createdAt: string
+  steps: AiAgentStepView[]
+}
+
+export interface AiAgentRunReplayView {
+  runId: number
+  replayStatus: string
+  reconstructable: boolean
+  run: AiAgentRunView
+  stepCount: number
+  evidenceCount: number
+  agentSequence: string[]
+  reconstructedFinalOutput?: Record<string, unknown> | unknown
+  verifierOutput?: Record<string, unknown> | unknown
+  claimChecks?: Array<Record<string, unknown>> | unknown
+  reviewFindings?: Array<Record<string, unknown>> | unknown
+  consistencyIssues: string[]
+}
+
 export interface AiRelatedSpeciesRecord {
   id: number
   chineseName?: string
@@ -290,6 +355,9 @@ export interface AiIdentifyImageResponse {
   confidenceAdjustedByRag: boolean
   ragConclusion?: string
   conflictWarnings: string[]
+  agentRunId?: number
+  agentSteps?: AiAgentStepView[]
+  verificationStatus?: string
 }
 
 export interface AiSpeciesAutocompleteResponse {
@@ -312,6 +380,9 @@ export interface AiSpeciesAutocompleteResponse {
   confidence: number
   notes: string[]
   relatedSpeciesRecords: AiRelatedSpeciesRecord[]
+  agentRunId?: number
+  agentSteps?: AiAgentStepView[]
+  verificationStatus?: string
 }
 
 export interface AiPolishTextResponse {
@@ -319,6 +390,10 @@ export interface AiPolishTextResponse {
   polishedText: string
   summary?: string
   keywords: string[]
+  agentRunId?: number
+  agentSteps?: AiAgentStepView[]
+  verificationStatus?: string
+  confidence?: number
 }
 
 export interface AiTranslateSpeciesResponse {
@@ -330,6 +405,10 @@ export interface AiTranslateSpeciesResponse {
   distribution?: string
   geoRangeText?: string
   summary?: string
+  agentRunId?: number
+  agentSteps?: AiAgentStepView[]
+  verificationStatus?: string
+  confidence?: number
 }
 
 export interface AiObservationSpeciesItem {
@@ -355,6 +434,10 @@ export interface AiObservationAnalysisResponse {
   reviewNotes: string[]
   anomalies: AiObservationAnomaly[]
   needsReview: boolean
+  agentRunId?: number
+  agentSteps?: AiAgentStepView[]
+  verificationStatus?: string
+  confidence?: number
 }
 
 export interface AiObservationQualityIssue {
@@ -372,6 +455,10 @@ export interface AiObservationQualityResponse {
   strengths: string[]
   issues: AiObservationQualityIssue[]
   needsReview: boolean
+  agentRunId?: number
+  agentSteps?: AiAgentStepView[]
+  verificationStatus?: string
+  confidence?: number
 }
 
 export interface AiAssistantStructuredQuery {
@@ -413,6 +500,10 @@ export interface AiAssistantChatResponse {
   highlights: string[]
   evidence: AiAssistantEvidenceItem[]
   cacheHit: boolean
+  agentRunId?: number
+  agentSteps?: AiAgentStepView[]
+  verificationStatus?: string
+  confidence?: number
 }
 
 export interface AiAssistantHistoryResponse {
@@ -459,6 +550,11 @@ export interface AiReviewTicketDetailView extends AiReviewTicketView {
   finalChineseName?: string
   finalScientificName?: string
   reviewNote?: string
+  agentRunId?: number
+  agentRun?: AiAgentRunView
+  agentSteps?: AiAgentStepView[]
+  verificationStatus?: string
+  agentConfidence?: number
 }
 
 export interface AiReportView {
@@ -477,6 +573,11 @@ export interface AiReportDetailView extends AiReportView {
   risks: string[]
   recommendations: string[]
   evidence: string[]
+  agentRunId?: number
+  agentRun?: AiAgentRunView
+  agentSteps?: AiAgentStepView[]
+  verificationStatus?: string
+  confidence?: number
 }
 
 export interface RagDocumentView {

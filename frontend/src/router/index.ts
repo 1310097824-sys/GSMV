@@ -23,6 +23,7 @@ const routes = [
       { path: 'eco-map', component: () => import('@/views/EcoMapView.vue'), meta: { authority: 'OBS_READ' } },
       { path: 'observations', component: () => import('@/views/ObservationView.vue'), meta: { authority: 'OBS_READ' } },
       { path: 'assistant', component: () => import('@/views/AiAssistantView.vue') },
+      { path: 'agent-runs', component: () => import('@/views/AgentRunsView.vue') },
       { path: 'ai-reviews', component: () => import('@/views/AiReviewTicketsView.vue'), meta: { authority: 'AI_REVIEW_READ' } },
       { path: 'ai-reports', component: () => import('@/views/AiReportsView.vue'), meta: { authority: 'REPORT_READ' } },
       { path: 'rag-knowledge', component: () => import('@/views/RagKnowledgeView.vue'), meta: { authority: 'RAG_READ' } },

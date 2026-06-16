@@ -17,11 +17,11 @@ public interface AiReviewTicketMapper {
             INSERT INTO ai_review_ticket (
               source_type, status, submitted_by, likely_chinese_name, likely_scientific_name,
               confidence, needs_human_review, reasoning, candidate_json, related_species_json,
-              initial_recognition_json, rag_evidence_json, review_evidence_json, submit_note
+              initial_recognition_json, rag_evidence_json, review_evidence_json, agent_run_id, submit_note
             ) VALUES (
               #{sourceType}, #{status}, #{submittedBy}, #{likelyChineseName}, #{likelyScientificName},
               #{confidence}, #{needsHumanReview}, #{reasoning}, #{candidateJson}, #{relatedSpeciesJson},
-              #{initialRecognitionJson}, #{ragEvidenceJson}, #{reviewEvidenceJson}, #{submitNote}
+              #{initialRecognitionJson}, #{ragEvidenceJson}, #{reviewEvidenceJson}, #{agentRunId}, #{submitNote}
             )
             """)
     @Options(useGeneratedKeys = true, keyProperty = "id")
@@ -34,6 +34,14 @@ public interface AiReviewTicketMapper {
             WHERE id = #{id}
             """)
     void updateImageMediaId(@Param("id") Long id, @Param("imageMediaId") Long imageMediaId);
+
+    @Update("""
+            UPDATE ai_review_ticket
+            SET agent_run_id = #{agentRunId},
+                updated_at = CURRENT_TIMESTAMP(3)
+            WHERE id = #{id}
+            """)
+    void updateAgentRunId(@Param("id") Long id, @Param("agentRunId") Long agentRunId);
 
     @Update("""
             UPDATE ai_review_ticket

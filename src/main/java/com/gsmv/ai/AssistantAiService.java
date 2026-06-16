@@ -1,5 +1,8 @@
 package com.gsmv.ai;
 
+import com.gsmv.ai.agent.AgentOrchestratorService;
+import com.gsmv.ai.agent.AgentTask;
+import com.gsmv.ai.agent.dto.AgentDtos;
 import com.gsmv.ai.dto.AssistantAiDtos;
 import com.gsmv.ai.history.AssistantChatHistoryService;
 import com.gsmv.ai.rag.RagKnowledgeService;
@@ -113,6 +116,7 @@ public class AssistantAiService {
     private final RagKnowledgeService ragKnowledgeService;
     private final AiModelGateway aiModelGateway;
     private final AssistantChatHistoryService assistantChatHistoryService;
+    private final AgentOrchestratorService agentOrchestratorService;
 
     public AssistantAiService(
             AiProperties aiProperties,
@@ -123,7 +127,8 @@ public class AssistantAiService {
             AssistantQueryCache assistantQueryCache,
             RagKnowledgeService ragKnowledgeService,
             AiModelGateway aiModelGateway,
-            AssistantChatHistoryService assistantChatHistoryService
+            AssistantChatHistoryService assistantChatHistoryService,
+            AgentOrchestratorService agentOrchestratorService
     ) {
         this.aiProperties = aiProperties;
         this.observationService = observationService;
@@ -134,6 +139,7 @@ public class AssistantAiService {
         this.ragKnowledgeService = ragKnowledgeService;
         this.aiModelGateway = aiModelGateway;
         this.assistantChatHistoryService = assistantChatHistoryService;
+        this.agentOrchestratorService = agentOrchestratorService;
     }
 
     public AssistantAiDtos.ChatResponse chat(AssistantAiDtos.ChatRequest request) {
@@ -159,10 +165,10 @@ public class AssistantAiService {
         AssistantAiDtos.ChatResponse response;
         if (isLightweightIntent(plan.intent())) {
             response = buildLightweightResponse(plan, request);
+            response = enrichWithAgentTrace(request, response);
         } else {
             AssistantContext context = collectContext(plan);
-            List<RagSearchHit> ragHits = ragKnowledgeService.retrieveForScenario(RagKnowledgeService.SCENARIO_ASSISTANT, request.message(), 6);
-            response = buildConversationalResponse(request, plan, context, ragHits);
+            response = buildAgentConversationalResponse(request, plan, context);
         }
         assistantChatHistoryService.recordExchange(request, response);
         assistantQueryCache.put(cacheKey, response);
@@ -179,18 +185,269 @@ public class AssistantAiService {
         return response;
     }
 
+    private AssistantAiDtos.ChatResponse buildAgentConversationalResponse(
+            AssistantAiDtos.ChatRequest request,
+            AssistantAiDtos.StructuredQuery plan,
+            AssistantContext context
+    ) {
+        AssistantAiDtos.ChatResponse localResponse = buildLocalResponse(plan, context);
+        AgentDtos.AgentRunView run = agentOrchestratorService.execute(new AgentTask(
+                AgentOrchestratorService.WORKFLOW_ASSISTANT_CHAT,
+                "ASSISTANT",
+                null,
+                request.message(),
+                RagKnowledgeService.SCENARIO_ASSISTANT,
+                mapOf(
+                        "structuredQuery", plan,
+                        "assistantContext", assistantContextSnapshot(context),
+                        "highlights", localResponse.highlights(),
+                        "evidence", localResponse.evidence(),
+                        "fallbackAnswer", truncateForPrompt(localResponse.answer(), 1200)
+                ),
+                List.of()
+        ));
+        String agentAnswer = firstNonBlank(
+                agentFinalString(run.finalOutput(), "finalAnswer"),
+                localResponse.answer()
+        );
+        return new AssistantAiDtos.ChatResponse(
+                agentAnswer,
+                plan,
+                mergeAgentHighlights(localResponse.highlights(), run),
+                mergeAgentEvidence(localResponse.evidence(), run.finalOutput()),
+                false,
+                run.id(),
+                run.steps(),
+                run.verificationStatus(),
+                run.confidence()
+        );
+    }
+
+    private Map<String, Object> assistantContextSnapshot(AssistantContext context) {
+        if (context == null) {
+            return Map.of();
+        }
+        DashboardSummary summary = context.dashboardSummary();
+        return mapOf(
+                "summary", summary == null ? null : mapOf(
+                        "totalSpecies", summary.totalSpecies(),
+                        "totalObservations", summary.totalObservations(),
+                        "totalEcosystems", summary.totalEcosystems(),
+                        "recentObservationCount", summary.recentObservationCount()
+                ),
+                "species", context.species().stream()
+                        .limit(5)
+                        .map(item -> mapOf(
+                                "id", item.id(),
+                                "chineseName", item.chineseName(),
+                                "scientificName", item.scientificName(),
+                                "protectionLevel", item.protectionLevel(),
+                                "iucnStatus", item.iucnStatus()
+                        ))
+                        .toList(),
+                "observations", context.observationViews().stream()
+                        .limit(5)
+                        .map(item -> mapOf(
+                                "id", item.id(),
+                                "ecosystemName", item.ecosystemName(),
+                                "locationName", item.locationName(),
+                                "observedAt", item.observedAt() == null ? null : item.observedAt().toString()
+                        ))
+                        .toList(),
+                "ecosystems", context.ecosystemAnalytics().stream()
+                        .limit(5)
+                        .map(item -> mapOf(
+                                "ecosystemName", item.ecosystemName(),
+                                "ecosystemType", item.ecosystemType(),
+                                "observationCount", item.observationCount(),
+                                "speciesCount", item.speciesCount()
+                        ))
+                        .toList()
+        );
+    }
+
     private AssistantAiDtos.ChatResponse withCacheHit(AssistantAiDtos.ChatResponse response, boolean cacheHit) {
         return new AssistantAiDtos.ChatResponse(
                 response.answer(),
                 response.structuredQuery(),
                 response.highlights(),
                 response.evidence(),
-                cacheHit
+                cacheHit,
+                response.agentRunId(),
+                response.agentSteps(),
+                response.verificationStatus(),
+                response.confidence()
         );
     }
 
+    private AssistantAiDtos.ChatResponse enrichWithAgentTrace(
+            AssistantAiDtos.ChatRequest request,
+            AssistantAiDtos.ChatResponse response
+    ) {
+        AgentDtos.AgentRunView run = agentOrchestratorService.execute(new AgentTask(
+                AgentOrchestratorService.WORKFLOW_ASSISTANT_CHAT,
+                "ASSISTANT",
+                null,
+                request.message(),
+                RagKnowledgeService.SCENARIO_ASSISTANT,
+                mapOf(
+                        "structuredQuery", response.structuredQuery(),
+                        "highlights", response.highlights(),
+                        "evidence", response.evidence(),
+                        "answer", truncateForPrompt(response.answer(), 1200)
+                ),
+                List.of()
+        ));
+        String agentAnswer = firstNonBlank(agentFinalString(run.finalOutput(), "finalAnswer"), response.answer());
+        return new AssistantAiDtos.ChatResponse(
+                agentAnswer,
+                response.structuredQuery(),
+                mergeAgentHighlights(response.highlights(), run),
+                mergeAgentEvidence(response.evidence(), run.finalOutput()),
+                response.cacheHit(),
+                run.id(),
+                run.steps(),
+                run.verificationStatus(),
+                run.confidence()
+        );
+    }
+
+    private List<String> mergeAgentHighlights(List<String> originalHighlights, AgentDtos.AgentRunView run) {
+        List<String> highlights = new ArrayList<>();
+        if (originalHighlights != null) {
+            highlights.addAll(originalHighlights);
+        }
+        if (run != null && StringUtils.hasText(run.verificationStatus())) {
+            highlights.add("Agent 协作验证：" + verificationStatusLabel(run.verificationStatus()));
+        }
+        int evidenceCount = agentEvidenceSnapshot(run == null ? null : run.finalOutput()).size();
+        if (evidenceCount > 0) {
+            highlights.add("Agent 汇总证据 " + evidenceCount + " 条");
+        }
+        return highlights.stream()
+                .filter(StringUtils::hasText)
+                .distinct()
+                .limit(6)
+                .toList();
+    }
+
+    private List<AssistantAiDtos.EvidenceItem> mergeAgentEvidence(
+            List<AssistantAiDtos.EvidenceItem> originalEvidence,
+            Object finalOutput
+    ) {
+        List<AssistantAiDtos.EvidenceItem> evidence = new ArrayList<>();
+        if (originalEvidence != null) {
+            evidence.addAll(originalEvidence.stream().limit(8).toList());
+        }
+        agentEvidenceSnapshot(finalOutput).stream()
+                .map(this::toAssistantEvidence)
+                .forEach(evidence::add);
+        Set<String> seen = new LinkedHashSet<>();
+        return evidence.stream()
+                .filter(item -> seen.add(evidenceKey(item)))
+                .limit(12)
+                .toList();
+    }
+
+    private List<Map<String, Object>> agentEvidenceSnapshot(Object finalOutput) {
+        Map<String, Object> values = asStringMap(finalOutput);
+        Object snapshot = values.get("evidenceSnapshot");
+        if (!(snapshot instanceof Collection<?> collection)) {
+            return List.of();
+        }
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (Object item : collection) {
+            Map<String, Object> evidence = asStringMap(item);
+            if (!evidence.isEmpty()) {
+                items.add(evidence);
+            }
+        }
+        return items;
+    }
+
+    private AssistantAiDtos.EvidenceItem toAssistantEvidence(Map<String, Object> item) {
+        return new AssistantAiDtos.EvidenceItem(
+                firstNonBlank(textValue(item.get("sourceType")), textValue(item.get("type")), "agent"),
+                firstNonBlank(textValue(item.get("title")), textValue(item.get("sourceType")), "Agent 证据"),
+                firstNonBlank(
+                        textValue(item.get("description")),
+                        textValue(item.get("summary")),
+                        textValue(item.get("contentSnippet")),
+                        textValue(item.get("sourcePath"))
+                ),
+                longValue(item.get("sourceId")),
+                doubleValue(item.get("score")),
+                textValue(item.get("sourcePath"))
+        );
+    }
+
+    private String agentFinalString(Object finalOutput, String key) {
+        Object value = asStringMap(finalOutput).get(key);
+        return value instanceof String text ? text.trim() : "";
+    }
+
+    private Map<String, Object> asStringMap(Object value) {
+        if (!(value instanceof Map<?, ?> map)) {
+            return Map.of();
+        }
+        Map<String, Object> values = new LinkedHashMap<>();
+        map.forEach((key, entryValue) -> {
+            if (key != null && entryValue != null) {
+                values.put(String.valueOf(key), entryValue);
+            }
+        });
+        return values;
+    }
+
+    private String evidenceKey(AssistantAiDtos.EvidenceItem item) {
+        return firstNonBlank(item.type(), "") + "::"
+                + firstNonBlank(item.title(), "") + "::"
+                + (item.sourceId() == null ? "" : item.sourceId());
+    }
+
+    private String verificationStatusLabel(String status) {
+        return switch (status) {
+            case AgentOrchestratorService.STATUS_VERIFIED -> "可确认";
+            case AgentOrchestratorService.STATUS_INSUFFICIENT_EVIDENCE -> "证据不足";
+            case AgentOrchestratorService.STATUS_NEEDS_REVIEW -> "需要人工复核";
+            default -> status;
+        };
+    }
+
+    private Long longValue(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String text && StringUtils.hasText(text)) {
+            try {
+                return Long.parseLong(text.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private Double doubleValue(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        if (value instanceof String text && StringUtils.hasText(text)) {
+            try {
+                return Double.parseDouble(text.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private String textValue(Object value) {
+        return value == null ? "" : String.valueOf(value).trim();
+    }
+
     private AssistantAiDtos.ChatResponse enrichWithRag(AssistantAiDtos.ChatResponse response, String question) {
-        List<RagSearchHit> hits = ragKnowledgeService.retrieveForScenario(RagKnowledgeService.SCENARIO_ASSISTANT, question, 6);
+        List<RagSearchHit> hits = List.of();
         if (hits.isEmpty()) {
             return response;
         }
@@ -229,30 +486,13 @@ public class AssistantAiService {
             List<RagSearchHit> ragHits
     ) {
         AssistantAiDtos.ChatResponse localResponse = buildLocalResponse(plan, context);
-        List<AssistantAiDtos.EvidenceItem> evidence = mergeEvidence(localResponse.evidence(), ragHits);
-        List<String> highlights = buildConversationalHighlights(localResponse.highlights(), ragHits);
-
-        try {
-            String answer = aiModelGateway.deepSeekText(buildConversationMessages(request, plan, context, ragHits));
-            if (!StringUtils.hasText(answer)) {
-                answer = softenLocalAnswer(localResponse.answer());
-            }
-            return new AssistantAiDtos.ChatResponse(
-                    normalizeAssistantAnswer(answer),
-                    plan,
-                    highlights,
-                    evidence,
-                    false
-            );
-        } catch (RuntimeException ignored) {
-            return new AssistantAiDtos.ChatResponse(
-                    softenLocalAnswer(localResponse.answer()),
-                    plan,
-                    highlights,
-                    evidence,
-                    false
-            );
-        }
+        return new AssistantAiDtos.ChatResponse(
+                localResponse.answer(),
+                plan,
+                localResponse.highlights(),
+                localResponse.evidence(),
+                false
+        );
     }
 
     private List<Map<String, Object>> buildConversationMessages(
@@ -1910,6 +2150,18 @@ public class AssistantAiService {
             }
         }
         return null;
+    }
+
+    private Map<String, Object> mapOf(Object... pairs) {
+        Map<String, Object> values = new LinkedHashMap<>();
+        for (int index = 0; index + 1 < pairs.length; index += 2) {
+            Object key = pairs[index];
+            Object value = pairs[index + 1];
+            if (key != null && value != null) {
+                values.put(String.valueOf(key), value);
+            }
+        }
+        return values;
     }
 
     private record TrendPoint(String month, int observationCount, int speciesCount) {

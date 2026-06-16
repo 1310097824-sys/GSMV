@@ -1,5 +1,6 @@
 package com.gsmv.ai.dto;
 
+import com.gsmv.ai.agent.dto.AgentDtos;
 import com.gsmv.ai.rag.dto.RagDtos;
 import jakarta.validation.constraints.NotBlank;
 import java.util.List;
@@ -39,8 +40,43 @@ public final class SpeciesAiDtos {
             List<RagDtos.RagEvidenceItem> ragEvidence,
             boolean confidenceAdjustedByRag,
             String ragConclusion,
-            List<String> conflictWarnings
+            List<String> conflictWarnings,
+            Long agentRunId,
+            List<AgentDtos.AgentStepView> agentSteps,
+            String verificationStatus
     ) {
+        public IdentifyImageResponse(
+                String likelyChineseName,
+                String likelyScientificName,
+                double confidence,
+                boolean needsHumanReview,
+                String confidenceLabel,
+                String reasoning,
+                List<IdentificationCandidate> candidates,
+                List<RelatedSpeciesRecord> relatedSpeciesRecords,
+                List<RagDtos.RagEvidenceItem> ragEvidence,
+                boolean confidenceAdjustedByRag,
+                String ragConclusion,
+                List<String> conflictWarnings
+        ) {
+            this(
+                    likelyChineseName,
+                    likelyScientificName,
+                    confidence,
+                    needsHumanReview,
+                    confidenceLabel,
+                    reasoning,
+                    candidates,
+                    relatedSpeciesRecords,
+                    ragEvidence,
+                    confidenceAdjustedByRag,
+                    ragConclusion,
+                    conflictWarnings,
+                    null,
+                    List.of(),
+                    null
+            );
+        }
     }
 
     public record AutocompleteRequest(
@@ -74,7 +110,10 @@ public final class SpeciesAiDtos {
             String summary,
             double confidence,
             List<String> notes,
-            List<RelatedSpeciesRecord> relatedSpeciesRecords
+            List<RelatedSpeciesRecord> relatedSpeciesRecords,
+            Long agentRunId,
+            List<AgentDtos.AgentStepView> agentSteps,
+            String verificationStatus
     ) {
     }
 
@@ -88,7 +127,11 @@ public final class SpeciesAiDtos {
             String fieldName,
             String polishedText,
             String summary,
-            List<String> keywords
+            List<String> keywords,
+            Long agentRunId,
+            List<AgentDtos.AgentStepView> agentSteps,
+            String verificationStatus,
+            Double confidence
     ) {
     }
 
@@ -113,7 +156,11 @@ public final class SpeciesAiDtos {
             String habitat,
             String distribution,
             String geoRangeText,
-            String summary
+            String summary,
+            Long agentRunId,
+            List<AgentDtos.AgentStepView> agentSteps,
+            String verificationStatus,
+            Double confidence
     ) {
     }
 }

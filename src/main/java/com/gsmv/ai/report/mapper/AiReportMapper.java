@@ -7,6 +7,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface AiReportMapper {
@@ -22,6 +23,13 @@ public interface AiReportMapper {
             """)
     @Options(useGeneratedKeys = true, keyProperty = "id")
     void insert(AiReport report);
+
+    @Update("""
+            UPDATE ai_research_report
+            SET agent_run_id = #{agentRunId}
+            WHERE id = #{id}
+            """)
+    void updateAgentRunId(@Param("id") Long id, @Param("agentRunId") Long agentRunId);
 
     @Select("""
             SELECT r.*, COALESCE(u.display_name, u.username) AS creator_name

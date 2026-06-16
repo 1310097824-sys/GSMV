@@ -138,6 +138,14 @@
               </el-tag>
             </div>
 
+            <AgentTracePanel
+              v-if="lastResponse.agentSteps?.length"
+              class="assistant-agent-trace"
+              :run-id="lastResponse.agentRunId"
+              :steps="lastResponse.agentSteps"
+              :title="`协作轨迹 #${lastResponse.agentRunId || '-'}`"
+            />
+
             <div class="query-tags">
               <el-tag
                 v-for="entry in structuredQueryEntries"
@@ -189,6 +197,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { Delete, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { askAiAssistantStream, clearAiAssistantHistory, getAiAssistantHistory } from '@/api/ai'
+import AgentTracePanel from '@/components/AgentTracePanel.vue'
 import type { AiAssistantChatResponse, AiAssistantMessage } from '@/types/gsmv'
 
 const quickPrompts = [
@@ -731,6 +740,10 @@ function appendAssistantMessage(index: number, content: string) {
   margin-bottom: 14px;
   color: var(--gsmv-muted);
   font-size: 13px;
+}
+
+.assistant-agent-trace {
+  margin-bottom: 14px;
 }
 
 .assistant-side__section h3 {

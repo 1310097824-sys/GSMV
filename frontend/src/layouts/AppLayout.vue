@@ -84,6 +84,7 @@
 <script setup lang="ts">
 import {
   ChatDotRound,
+  Connection,
   DataAnalysis,
   Document,
   Finished,
@@ -109,6 +110,7 @@ const menus = [
   { path: '/eco-map', label: '生态地图', icon: MapLocation, authority: 'OBS_READ' },
   { path: '/observations', label: '观测记录', icon: Notebook, authority: 'OBS_READ' },
   { path: '/assistant', label: 'AI 助手', icon: ChatDotRound },
+  { path: '/agent-runs', label: 'Agent 协作台', icon: Connection },
   { path: '/ai-reviews', label: 'AI 复核', icon: Finished, authority: 'AI_REVIEW_READ' },
   { path: '/ai-reports', label: 'AI 科研报告', icon: Document, authority: 'REPORT_READ' },
   { path: '/rag-knowledge', label: 'RAG 知识中台', icon: Notebook, authority: 'RAG_READ' },

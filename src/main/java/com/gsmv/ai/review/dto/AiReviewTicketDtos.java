@@ -1,5 +1,6 @@
 package com.gsmv.ai.review.dto;
 
+import com.gsmv.ai.agent.dto.AgentDtos;
 import com.gsmv.ai.dto.SpeciesAiDtos;
 import com.gsmv.ai.rag.dto.RagDtos;
 import jakarta.validation.constraints.NotBlank;
@@ -22,6 +23,7 @@ public final class AiReviewTicketDtos {
             List<RagDtos.RagEvidenceItem> ragEvidence,
             String ragConclusion,
             List<String> conflictWarnings,
+            Long agentRunId,
             String submitNote
     ) {
     }
@@ -100,7 +102,78 @@ public final class AiReviewTicketDtos {
             String reviewNote,
             LocalDateTime reviewedAt,
             LocalDateTime createdAt,
-            LocalDateTime updatedAt
+            LocalDateTime updatedAt,
+            Long agentRunId,
+            AgentDtos.AgentRunView agentRun,
+            List<AgentDtos.AgentStepView> agentSteps,
+            String verificationStatus,
+            Double agentConfidence
     ) {
+        public ReviewTicketDetailView(
+                Long id,
+                String sourceType,
+                String status,
+                String resolutionCode,
+                Long submittedBy,
+                String submittedByName,
+                Long reviewerUserId,
+                String reviewerName,
+                Long imageMediaId,
+                String imageUrl,
+                String likelyChineseName,
+                String likelyScientificName,
+                double confidence,
+                boolean needsHumanReview,
+                String reasoning,
+                List<SpeciesAiDtos.IdentificationCandidate> candidates,
+                List<SpeciesAiDtos.RelatedSpeciesRecord> relatedSpeciesRecords,
+                List<RagDtos.RagEvidenceItem> ragEvidence,
+                String initialRecognitionJson,
+                String reviewEvidenceJson,
+                String submitNote,
+                Long finalSpeciesId,
+                String finalChineseName,
+                String finalScientificName,
+                String reviewNote,
+                LocalDateTime reviewedAt,
+                LocalDateTime createdAt,
+                LocalDateTime updatedAt
+        ) {
+            this(
+                    id,
+                    sourceType,
+                    status,
+                    resolutionCode,
+                    submittedBy,
+                    submittedByName,
+                    reviewerUserId,
+                    reviewerName,
+                    imageMediaId,
+                    imageUrl,
+                    likelyChineseName,
+                    likelyScientificName,
+                    confidence,
+                    needsHumanReview,
+                    reasoning,
+                    candidates,
+                    relatedSpeciesRecords,
+                    ragEvidence,
+                    initialRecognitionJson,
+                    reviewEvidenceJson,
+                    submitNote,
+                    finalSpeciesId,
+                    finalChineseName,
+                    finalScientificName,
+                    reviewNote,
+                    reviewedAt,
+                    createdAt,
+                    updatedAt,
+                    null,
+                    null,
+                    List.of(),
+                    null,
+                    null
+            );
+        }
     }
 }

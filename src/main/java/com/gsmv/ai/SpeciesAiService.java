@@ -1,9 +1,11 @@
 package com.gsmv.ai;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import com.gsmv.ai.agent.AgentOrchestratorService;
+import com.gsmv.ai.agent.AgentTask;
+import com.gsmv.ai.agent.dto.AgentDtos;
 import com.gsmv.ai.dto.SpeciesAiDtos;
 import com.gsmv.ai.rag.RagKnowledgeService;
-import com.gsmv.ai.rag.RagSearchHit;
+import com.gsmv.ai.rag.dto.RagDtos;
 import com.gsmv.audit.service.AuditService;
 import com.gsmv.common.ErrorCode;
 import com.gsmv.common.PageResponse;
@@ -26,24 +28,21 @@ import org.springframework.web.multipart.MultipartFile;
 @Service
 public class SpeciesAiService {
 
-    private final AiModelGateway aiModelGateway;
     private final AiProperties aiProperties;
     private final SpeciesService speciesService;
-    private final RagKnowledgeService ragKnowledgeService;
     private final AuditService auditService;
+    private final AgentOrchestratorService agentOrchestratorService;
 
     public SpeciesAiService(
-            AiModelGateway aiModelGateway,
             AiProperties aiProperties,
             SpeciesService speciesService,
-            RagKnowledgeService ragKnowledgeService,
-            AuditService auditService
+            AuditService auditService,
+            AgentOrchestratorService agentOrchestratorService
     ) {
-        this.aiModelGateway = aiModelGateway;
         this.aiProperties = aiProperties;
         this.speciesService = speciesService;
-        this.ragKnowledgeService = ragKnowledgeService;
         this.auditService = auditService;
+        this.agentOrchestratorService = agentOrchestratorService;
     }
 
     public SpeciesAiDtos.IdentifyImageResponse identifyImage(MultipartFile file) {
@@ -55,61 +54,32 @@ public class SpeciesAiService {
         }
 
         try {
-            JsonNode result = aiModelGateway.bailianVisionJson(
-                    """
-                    你是一名海洋生物图像识别专家。
-                    请根据图片内容给出最可能的物种识别结果，并仅返回 JSON。
-                    """,
-                    """
-                    请识别这张海洋生物图片，并返回如下 JSON：
-                    {
-                      "likelyChineseName": "",
-                      "likelyScientificName": "",
-                      "confidence": 0.0,
-                      "reasoning": "",
-                      "candidates": [
-                        {"chineseName": "", "scientificName": "", "confidence": 0.0, "reason": ""}
-                      ]
-                    }
-                    规则：
-                    1. confidence 范围为 0 到 1。
-                    2. candidates 返回 1 到 5 个候选项，按置信度降序。
-                    3. 若无法确定，请降低 confidence，并在 reasoning 中说明不确定原因。
-                    4. 输出必须是合法 JSON，不要输出 Markdown。
-                    """,
-                    file.getBytes(),
-                    file.getContentType()
+            byte[] imageBytes = file.getBytes();
+            String agentPrompt = firstNonBlank(file.getOriginalFilename(), "marine species image identification");
+            Map<String, Object> agentInput = mapOf(
+                    "fileName", file.getOriginalFilename(),
+                    "contentType", file.getContentType(),
+                    "lowConfidenceThreshold", aiProperties.lowConfidenceThreshold(),
+                    "ragEvidencePending", true,
+                    "ragEvidence", List.of(),
+                    "conflictWarnings", List.of()
             );
-
-            String likelyChineseName = text(result, "likelyChineseName");
-            String likelyScientificName = text(result, "likelyScientificName");
-            double confidence = boundedConfidence(number(result, "confidence"));
-            String reasoning = text(result, "reasoning");
-            List<SpeciesAiDtos.IdentificationCandidate> candidates = parseCandidates(result.path("candidates"));
-            boolean modelNeedsHumanReview = confidence < aiProperties.lowConfidenceThreshold();
-            List<String> keywords = new ArrayList<>();
-            keywords.add(likelyChineseName);
-            keywords.add(likelyScientificName);
-            candidates.forEach(candidate -> {
-                keywords.add(candidate.chineseName());
-                keywords.add(candidate.scientificName());
-            });
-            List<SpeciesAiDtos.RelatedSpeciesRecord> relatedSpeciesRecords = searchRelatedSpecies(keywords.toArray(String[]::new));
-            String ragQuery = String.join(" ", keywords.stream().filter(StringUtils::hasText).toList());
-            List<com.gsmv.ai.rag.dto.RagDtos.RagEvidenceItem> ragEvidence = ragKnowledgeService.retrieveEvidenceForScenario(
+            AgentDtos.AgentRunView run = agentOrchestratorService.execute(new AgentTask(
+                    AgentOrchestratorService.WORKFLOW_SPECIES_IDENTIFY,
+                    "IMAGE",
+                    null,
+                    agentPrompt,
                     RagKnowledgeService.SCENARIO_IMAGE_IDENTIFICATION,
-                    firstNonBlank(ragQuery, reasoning, "marine species image identification"),
-                    5
-            );
-            boolean confidenceAdjustedByRag = !ragEvidence.isEmpty();
-            List<String> conflictWarnings = imageRagWarnings(confidence, ragEvidence, likelyChineseName, likelyScientificName);
-            double finalConfidence = confidenceAdjustedByRag && conflictWarnings.isEmpty()
-                    ? Math.min(1.0d, confidence + 0.05d)
-                    : confidence;
-            boolean needsHumanReview = modelNeedsHumanReview || finalConfidence < aiProperties.lowConfidenceThreshold() || !conflictWarnings.isEmpty();
-            String ragConclusion = ragEvidence.isEmpty()
-                    ? "No reliable RAG evidence was retrieved for this image result."
-                    : "RAG retrieved " + ragEvidence.size() + " evidence item(s) for candidate verification.";
+                    agentInput,
+                    List.of(),
+                    mapOf(
+                            "imageBytes", imageBytes,
+                            "contentType", file.getContentType()
+                    )
+            ));
+            AgentVisionResult visionResult = extractAgentVisionResult(run);
+            List<SpeciesAiDtos.RelatedSpeciesRecord> relatedSpeciesRecords = searchRelatedSpecies(visionResult.keywords().toArray(String[]::new));
+            AgentSpeciesDecision agentDecision = buildAgentSpeciesDecision(run, visionResult.confidence(), visionResult.needsHumanReview());
 
             auditService.record(
                     SecurityUtils.requireCurrentUser().userId(),
@@ -122,18 +92,21 @@ public class SpeciesAiService {
             );
 
             return new SpeciesAiDtos.IdentifyImageResponse(
-                    likelyChineseName,
-                    likelyScientificName,
-                    finalConfidence,
-                    needsHumanReview,
-                    needsHumanReview ? "建议人工复核" : "识别置信度较高",
-                    reasoning,
-                    candidates,
+                    visionResult.likelyChineseName(),
+                    visionResult.likelyScientificName(),
+                    agentDecision.confidence(),
+                    agentDecision.needsHumanReview(),
+                    agentDecision.confidenceLabel(),
+                    visionResult.reasoning(),
+                    visionResult.candidates(),
                     relatedSpeciesRecords,
-                    ragEvidence,
-                    confidenceAdjustedByRag,
-                    ragConclusion,
-                    conflictWarnings
+                    agentDecision.ragEvidence(),
+                    agentDecision.confidenceAdjustedByRag(),
+                    agentDecision.ragConclusion(),
+                    agentDecision.conflictWarnings(),
+                    run.id(),
+                    run.steps(),
+                    run.verificationStatus()
             );
         } catch (IOException ex) {
             throw new BusinessException(ErrorCode.INTERNAL_ERROR, "读取识别图片失败", HttpStatus.INTERNAL_SERVER_ERROR);
@@ -145,200 +118,369 @@ public class SpeciesAiService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "请至少填写中文名或学名后再使用 AI 补全", HttpStatus.BAD_REQUEST);
         }
 
-        JsonNode result = aiModelGateway.deepSeekJson(List.of(
-                AiModelGateway.message("system", """
-                        你是一名海洋生物分类学与科研写作助手。
-                        你的任务是根据已知的中文名、学名和已有描述，补全物种档案字段。
-                        返回内容必须是纯 JSON。
-                        """),
-                AiModelGateway.message("user", """
-                        请根据以下输入补全物种档案。
-                        输入：
-                        中文名：%s
-                        学名：%s
-                        物种简介：%s
-                        形态特征：%s
-                        生活习性：%s
-                        栖息环境：%s
-                        分布区域：%s
-                        地理范围：%s
-                        RAG知识库参考：
-                        %s
-
-                        请严格返回 JSON：
-                        {
-                          "chineseName": "",
-                          "scientificName": "",
-                          "phylumName": "",
-                          "className": "",
-                          "orderName": "",
-                          "familyName": "",
-                          "genusName": "",
-                          "protectionLevel": "",
-                          "iucnStatus": "",
-                          "description": "",
-                          "morphology": "",
-                          "habit": "",
-                          "habitat": "",
-                          "distribution": "",
-                          "geoRangeText": "",
-                          "summary": "",
-                          "confidence": 0.0,
-                          "notes": []
-                        }
-
-                        规则：
-                        1. 尽量保留用户已输入的中文名和学名。
-                        2. 不确定的字段请返回空字符串，不要编造。
-                        3. 文本内容使用简洁、规范的中文。
-                        4. confidence 范围 0 到 1。
-                        """.formatted(
-                        safe(request.chineseName()),
-                        safe(request.scientificName()),
-                        safe(request.description()),
-                        safe(request.morphology()),
-                        safe(request.habit()),
-                        safe(request.habitat()),
-                        safe(request.distribution()),
-                        safe(request.geoRangeText()),
-                        ragContext(firstNonBlank(request.chineseName(), request.scientificName(), request.description()))
-                ))
+        Map<String, Object> agentInput = speciesProfileInput(request);
+        String prompt = firstNonBlank(request.chineseName(), request.scientificName(), request.description(), "species profile autocomplete");
+        AgentDtos.AgentRunView run = agentOrchestratorService.execute(new AgentTask(
+                AgentOrchestratorService.WORKFLOW_SPECIES_PROFILE_ASSIST,
+                "SPECIES_PROFILE",
+                null,
+                prompt,
+                RagKnowledgeService.SCENARIO_SPECIES_PROFILE,
+                agentInput,
+                List.of()
         ));
-
-        List<SpeciesAiDtos.RelatedSpeciesRecord> related = searchRelatedSpecies(request.chineseName(), request.scientificName());
+        Map<String, Object> profile = agentStepOutput(run, "Taxonomy Agent");
+        List<SpeciesAiDtos.RelatedSpeciesRecord> related = searchRelatedSpecies(request.chineseName(), request.scientificName(), stringField(profile, "chineseName"), stringField(profile, "scientificName"));
         auditService.record(SecurityUtils.requireCurrentUser().userId(), "AI", "AUTOCOMPLETE_SPECIES", "SPECIES", null, true,
                 "{\"chineseName\":\"" + escapeJson(request.chineseName()) + "\",\"scientificName\":\"" + escapeJson(request.scientificName()) + "\"}");
         return new SpeciesAiDtos.AutocompleteResponse(
-                fallback(text(result, "chineseName"), request.chineseName()),
-                fallback(text(result, "scientificName"), request.scientificName()),
-                text(result, "phylumName"),
-                text(result, "className"),
-                text(result, "orderName"),
-                text(result, "familyName"),
-                text(result, "genusName"),
-                text(result, "protectionLevel"),
-                text(result, "iucnStatus"),
-                fallback(text(result, "description"), request.description()),
-                fallback(text(result, "morphology"), request.morphology()),
-                fallback(text(result, "habit"), request.habit()),
-                fallback(text(result, "habitat"), request.habitat()),
-                fallback(text(result, "distribution"), request.distribution()),
-                fallback(text(result, "geoRangeText"), request.geoRangeText()),
-                text(result, "summary"),
-                boundedConfidence(number(result, "confidence")),
-                stringList(result.path("notes")),
-                related
+                fallback(stringField(profile, "chineseName"), request.chineseName()),
+                fallback(stringField(profile, "scientificName"), request.scientificName()),
+                stringField(profile, "phylumName"),
+                stringField(profile, "className"),
+                stringField(profile, "orderName"),
+                stringField(profile, "familyName"),
+                stringField(profile, "genusName"),
+                stringField(profile, "protectionLevel"),
+                stringField(profile, "iucnStatus"),
+                fallback(stringField(profile, "description"), request.description()),
+                fallback(stringField(profile, "morphology"), request.morphology()),
+                fallback(stringField(profile, "habit"), request.habit()),
+                fallback(stringField(profile, "habitat"), request.habitat()),
+                fallback(stringField(profile, "distribution"), request.distribution()),
+                fallback(stringField(profile, "geoRangeText"), request.geoRangeText()),
+                stringField(profile, "summary"),
+                boundedConfidence(doubleField(profile, "confidence")),
+                stringList(fieldValue(profile, "notes")),
+                related,
+                run.id(),
+                run.steps(),
+                run.verificationStatus()
         );
     }
 
     public SpeciesAiDtos.PolishTextResponse polishText(SpeciesAiDtos.PolishTextRequest request) {
-        JsonNode result = aiModelGateway.deepSeekJson(List.of(
-                AiModelGateway.message("system", """
-                        你是一名海洋生物科研文本编辑助手。
-                        你会对输入文本进行规范化润色，并返回纯 JSON。
-                        """),
-                AiModelGateway.message("user", """
-                        请润色字段“%s”的内容，使其更规范、简洁、适合物种档案使用。
-                        原文：
-                        %s
-                        RAG知识库参考：
-                        %s
-
-                        请返回 JSON：
-                        {
-                          "polishedText": "",
-                          "summary": "",
-                          "keywords": []
-                        }
-                        """.formatted(request.fieldName(), request.text(), ragContext(request.text())))
+        Map<String, Object> agentInput = mapOf(
+                "assistType", "POLISH_TEXT",
+                "fieldName", request.fieldName(),
+                "text", request.text()
+        );
+        AgentDtos.AgentRunView run = agentOrchestratorService.execute(new AgentTask(
+                AgentOrchestratorService.WORKFLOW_SPECIES_PROFILE_ASSIST,
+                "SPECIES_TEXT",
+                null,
+                firstNonBlank(request.text(), request.fieldName(), "species text polish"),
+                RagKnowledgeService.SCENARIO_SPECIES_PROFILE,
+                agentInput,
+                List.of()
         ));
+        Map<String, Object> output = agentStepOutput(run, "Taxonomy Agent");
 
         auditService.record(SecurityUtils.requireCurrentUser().userId(), "AI", "POLISH_SPECIES_TEXT", "SPECIES", null, true,
                 "{\"field\":\"" + escapeJson(request.fieldName()) + "\"}");
         return new SpeciesAiDtos.PolishTextResponse(
                 request.fieldName(),
-                text(result, "polishedText"),
-                text(result, "summary"),
-                stringList(result.path("keywords"))
+                fallback(stringField(output, "polishedText"), request.text()),
+                stringField(output, "summary"),
+                stringList(fieldValue(output, "keywords")),
+                run.id(),
+                run.steps(),
+                run.verificationStatus(),
+                run.confidence()
         );
     }
 
     public SpeciesAiDtos.TranslateSpeciesResponse translate(SpeciesAiDtos.TranslateSpeciesRequest request) {
-        JsonNode result = aiModelGateway.deepSeekJson(List.of(
-                AiModelGateway.message("system", """
-                        你是一名多语言海洋生物科普翻译助手。
-                        请把用户提供的描述翻译为目标语言，并返回纯 JSON。
-                        """),
-                AiModelGateway.message("user", """
-                        目标语言：%s
-                        中文名：%s
-                        学名：%s
-                        物种简介：%s
-                        形态特征：%s
-                        生活习性：%s
-                        栖息环境：%s
-                        分布区域：%s
-                        地理范围：%s
-                        RAG知识库参考：
-                        %s
-
-                        请返回 JSON：
-                        {
-                          "description": "",
-                          "morphology": "",
-                          "habit": "",
-                          "habitat": "",
-                          "distribution": "",
-                          "geoRangeText": "",
-                          "summary": ""
-                        }
-
-                        规则：
-                        1. 学名不翻译。
-                        2. 术语保持科研表达准确。
-                        3. 若某字段为空，返回空字符串。
-                        """.formatted(
-                        request.targetLanguage(),
-                        safe(request.chineseName()),
-                        safe(request.scientificName()),
-                        safe(request.description()),
-                        safe(request.morphology()),
-                        safe(request.habit()),
-                        safe(request.habitat()),
-                        safe(request.distribution()),
-                        safe(request.geoRangeText()),
-                        ragContext(firstNonBlank(request.chineseName(), request.scientificName(), request.description(), request.distribution()))
-                ))
+        Map<String, Object> agentInput = mapOf(
+                "assistType", "TRANSLATE_SPECIES",
+                "chineseName", request.chineseName(),
+                "scientificName", request.scientificName(),
+                "description", request.description(),
+                "morphology", request.morphology(),
+                "habit", request.habit(),
+                "habitat", request.habitat(),
+                "distribution", request.distribution(),
+                "geoRangeText", request.geoRangeText(),
+                "targetLanguage", request.targetLanguage()
+        );
+        AgentDtos.AgentRunView run = agentOrchestratorService.execute(new AgentTask(
+                AgentOrchestratorService.WORKFLOW_SPECIES_PROFILE_ASSIST,
+                "SPECIES_TRANSLATION",
+                null,
+                firstNonBlank(request.chineseName(), request.scientificName(), request.description(), request.targetLanguage(), "species translation"),
+                RagKnowledgeService.SCENARIO_SPECIES_PROFILE,
+                agentInput,
+                List.of()
         ));
+        Map<String, Object> output = agentStepOutput(run, "Taxonomy Agent");
 
         auditService.record(SecurityUtils.requireCurrentUser().userId(), "AI", "TRANSLATE_SPECIES", "SPECIES", null, true,
                 "{\"targetLanguage\":\"" + escapeJson(request.targetLanguage()) + "\"}");
         return new SpeciesAiDtos.TranslateSpeciesResponse(
                 request.targetLanguage(),
-                text(result, "description"),
-                text(result, "morphology"),
-                text(result, "habit"),
-                text(result, "habitat"),
-                text(result, "distribution"),
-                text(result, "geoRangeText"),
-                text(result, "summary")
+                stringField(output, "description"),
+                stringField(output, "morphology"),
+                stringField(output, "habit"),
+                stringField(output, "habitat"),
+                stringField(output, "distribution"),
+                stringField(output, "geoRangeText"),
+                stringField(output, "summary"),
+                run.id(),
+                run.steps(),
+                run.verificationStatus(),
+                run.confidence()
         );
     }
 
-    private List<SpeciesAiDtos.IdentificationCandidate> parseCandidates(JsonNode candidatesNode) {
-        List<SpeciesAiDtos.IdentificationCandidate> candidates = new ArrayList<>();
-        if (!candidatesNode.isArray()) {
-            return candidates;
+    private Map<String, Object> speciesProfileInput(SpeciesAiDtos.AutocompleteRequest request) {
+        return mapOf(
+                "chineseName", request.chineseName(),
+                "scientificName", request.scientificName(),
+                "description", request.description(),
+                "morphology", request.morphology(),
+                "habit", request.habit(),
+                "habitat", request.habitat(),
+                "distribution", request.distribution(),
+                "geoRangeText", request.geoRangeText()
+        );
+    }
+
+    private AgentVisionResult extractAgentVisionResult(AgentDtos.AgentRunView run) {
+        Map<String, Object> output = agentStepOutput(run, "Vision Review Agent");
+        List<SpeciesAiDtos.IdentificationCandidate> candidates = parseAgentCandidates(fieldValue(output, "candidates"));
+        if (candidates.isEmpty()) {
+            candidates = parseAgentCandidates(fieldValue(output, "candidateSummaries"));
         }
-        for (JsonNode item : candidatesNode) {
-            candidates.add(new SpeciesAiDtos.IdentificationCandidate(
-                    text(item, "chineseName"),
-                    text(item, "scientificName"),
-                    boundedConfidence(number(item, "confidence")),
-                    text(item, "reason")
-            ));
+        SpeciesAiDtos.IdentificationCandidate topCandidate = candidates.isEmpty() ? null : candidates.get(0);
+        String likelyChineseName = firstNonBlank(
+                stringField(output, "likelyChineseName"),
+                topCandidate == null ? "" : topCandidate.chineseName()
+        );
+        String likelyScientificName = firstNonBlank(
+                stringField(output, "likelyScientificName"),
+                topCandidate == null ? "" : topCandidate.scientificName()
+        );
+        double confidence = boundedConfidence(doubleField(output, "confidence"));
+        boolean needsHumanReview = booleanField(output, "needsHumanReview");
+        List<String> keywords = new ArrayList<>();
+        keywords.add(likelyChineseName);
+        keywords.add(likelyScientificName);
+        candidates.forEach(candidate -> {
+            keywords.add(candidate.chineseName());
+            keywords.add(candidate.scientificName());
+        });
+        return new AgentVisionResult(
+                likelyChineseName,
+                likelyScientificName,
+                confidence,
+                needsHumanReview,
+                stringField(output, "reasoning"),
+                candidates,
+                keywords.stream().filter(StringUtils::hasText).distinct().toList()
+        );
+    }
+
+    private Map<String, Object> agentStepOutput(AgentDtos.AgentRunView run, String agentName) {
+        for (AgentDtos.AgentStepView step : run.steps()) {
+            if (agentName.equals(step.agentName()) && step.output() instanceof Map<?, ?> map) {
+                Map<String, Object> output = new LinkedHashMap<>();
+                map.forEach((key, value) -> {
+                    if (key != null) {
+                        output.put(String.valueOf(key), value);
+                    }
+                });
+                return output;
+            }
+        }
+        return Map.of();
+    }
+
+    private List<SpeciesAiDtos.IdentificationCandidate> parseAgentCandidates(Object value) {
+        List<SpeciesAiDtos.IdentificationCandidate> candidates = new ArrayList<>();
+        for (Object item : objectItems(value)) {
+            SpeciesAiDtos.IdentificationCandidate candidate = new SpeciesAiDtos.IdentificationCandidate(
+                    stringField(item, "chineseName"),
+                    stringField(item, "scientificName"),
+                    boundedConfidence(doubleField(item, "confidence")),
+                    stringField(item, "reason")
+            );
+            if (StringUtils.hasText(candidate.chineseName()) || StringUtils.hasText(candidate.scientificName())) {
+                candidates.add(candidate);
+            }
         }
         return candidates;
+    }
+
+    private AgentSpeciesDecision buildAgentSpeciesDecision(
+            AgentDtos.AgentRunView run,
+            double modelConfidence,
+            boolean modelNeedsHumanReview
+    ) {
+        double confidence = boundedConfidence(run.confidence() == null ? modelConfidence : run.confidence());
+        List<RagDtos.RagEvidenceItem> ragEvidence = extractAgentRagEvidence(run);
+        List<String> conflictWarnings = extractAgentConflictWarnings(run);
+        boolean agentNeedsReview = "NEEDS_REVIEW".equalsIgnoreCase(run.verificationStatus())
+                || "INSUFFICIENT_EVIDENCE".equalsIgnoreCase(run.verificationStatus());
+        boolean needsHumanReview = modelNeedsHumanReview
+                || agentNeedsReview
+                || confidence < aiProperties.lowConfidenceThreshold()
+                || !conflictWarnings.isEmpty();
+        boolean confidenceAdjustedByRag = !ragEvidence.isEmpty() && Math.abs(confidence - modelConfidence) > 0.0001d;
+        String ragConclusion = ragEvidence.isEmpty()
+                ? "Agent RAG Evidence Agent did not retrieve supporting evidence."
+                : "Agent RAG Evidence Agent retrieved " + ragEvidence.size() + " evidence item(s) for candidate verification.";
+        return new AgentSpeciesDecision(
+                confidence,
+                needsHumanReview,
+                needsHumanReview ? "Agent review required" : "Agent verified",
+                ragEvidence,
+                confidenceAdjustedByRag,
+                ragConclusion,
+                conflictWarnings
+        );
+    }
+
+    private record AgentVisionResult(
+            String likelyChineseName,
+            String likelyScientificName,
+            double confidence,
+            boolean needsHumanReview,
+            String reasoning,
+            List<SpeciesAiDtos.IdentificationCandidate> candidates,
+            List<String> keywords
+    ) {
+    }
+
+    private List<RagDtos.RagEvidenceItem> extractAgentRagEvidence(AgentDtos.AgentRunView run) {
+        List<RagDtos.RagEvidenceItem> evidence = new ArrayList<>();
+        for (AgentDtos.AgentStepView step : run.steps()) {
+            if (!"RAG Evidence Agent".equals(step.agentName())) {
+                continue;
+            }
+            for (Object item : objectItems(step.evidence())) {
+                RagDtos.RagEvidenceItem evidenceItem = toRagEvidenceItem(item);
+                if (evidenceItem != null) {
+                    evidence.add(evidenceItem);
+                }
+            }
+        }
+        return evidence;
+    }
+
+    private RagDtos.RagEvidenceItem toRagEvidenceItem(Object value) {
+        if (value instanceof RagDtos.RagEvidenceItem item) {
+            return item;
+        }
+        if (!(value instanceof Map<?, ?>)) {
+            return null;
+        }
+        return new RagDtos.RagEvidenceItem(
+                stringField(value, "sourceType"),
+                longField(value, "sourceId"),
+                longField(value, "documentId"),
+                longField(value, "chunkId"),
+                stringField(value, "title"),
+                stringField(value, "summary"),
+                firstNonBlank(stringField(value, "contentSnippet"), stringField(value, "summary")),
+                doubleField(value, "score"),
+                stringField(value, "sourcePath"),
+                stringField(value, "sourceName"),
+                RagKnowledgeService.SCENARIO_IMAGE_IDENTIFICATION
+        );
+    }
+
+    private List<String> extractAgentConflictWarnings(AgentDtos.AgentRunView run) {
+        Set<String> warnings = new LinkedHashSet<>();
+        Object finalOutput = run.finalOutput();
+        addAgentWarnings(warnings, fieldValue(finalOutput, "riskFindings"));
+        Object verifierOutput = fieldValue(finalOutput, "verifierOutput");
+        addAgentWarnings(warnings, fieldValue(verifierOutput, "reviewFindings"));
+        return new ArrayList<>(warnings);
+    }
+
+    private void addAgentWarnings(Set<String> warnings, Object value) {
+        for (Object item : objectItems(value)) {
+            String warning = firstNonBlank(
+                    stringField(item, "message"),
+                    stringField(item, "title"),
+                    stringField(item, "summary"),
+                    stringField(item, "description"),
+                    item instanceof String text ? text : ""
+            );
+            if (StringUtils.hasText(warning)) {
+                warnings.add(warning);
+            }
+        }
+    }
+
+    private List<Object> objectItems(Object value) {
+        if (value instanceof List<?> list) {
+            return new ArrayList<>(list);
+        }
+        if (value instanceof Iterable<?> iterable) {
+            List<Object> values = new ArrayList<>();
+            iterable.forEach(values::add);
+            return values;
+        }
+        return List.of();
+    }
+
+    private Object fieldValue(Object value, String key) {
+        if (value instanceof Map<?, ?> map) {
+            return map.get(key);
+        }
+        return null;
+    }
+
+    private String stringField(Object value, String key) {
+        Object field = fieldValue(value, key);
+        return field == null ? "" : String.valueOf(field).trim();
+    }
+
+    private Long longField(Object value, String key) {
+        Object field = fieldValue(value, key);
+        if (field instanceof Number number) {
+            return number.longValue();
+        }
+        try {
+            return StringUtils.hasText(String.valueOf(field)) ? Long.parseLong(String.valueOf(field)) : null;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private double doubleField(Object value, String key) {
+        Object field = fieldValue(value, key);
+        if (field instanceof Number number) {
+            return number.doubleValue();
+        }
+        try {
+            return StringUtils.hasText(String.valueOf(field)) ? Double.parseDouble(String.valueOf(field)) : 0.0d;
+        } catch (NumberFormatException ex) {
+            return 0.0d;
+        }
+    }
+
+    private boolean booleanField(Object value, String key) {
+        Object field = fieldValue(value, key);
+        if (field instanceof Boolean bool) {
+            return bool;
+        }
+        if (field instanceof String text && StringUtils.hasText(text)) {
+            return Boolean.parseBoolean(text);
+        }
+        return false;
+    }
+
+    private record AgentSpeciesDecision(
+            double confidence,
+            boolean needsHumanReview,
+            String confidenceLabel,
+            List<RagDtos.RagEvidenceItem> ragEvidence,
+            boolean confidenceAdjustedByRag,
+            String ragConclusion,
+            List<String> conflictWarnings
+    ) {
     }
 
     private List<SpeciesAiDtos.RelatedSpeciesRecord> searchRelatedSpecies(String... keywordGroups) {
@@ -379,65 +521,12 @@ public class SpeciesAiService {
         return new ArrayList<>(results.values());
     }
 
-    private List<String> imageRagWarnings(
-            double confidence,
-            List<com.gsmv.ai.rag.dto.RagDtos.RagEvidenceItem> evidence,
-            String likelyChineseName,
-            String likelyScientificName
-    ) {
-        List<String> warnings = new ArrayList<>();
-        if (evidence.isEmpty() && confidence < 0.78d) {
-            warnings.add("未检索到可靠RAG证据，建议人工复核");
-            return warnings;
-        }
-        if (!evidence.isEmpty()) {
-            String joined = evidence.stream()
-                    .map(item -> safe(item.title()) + " " + safe(item.summary()) + " " + safe(item.contentSnippet()))
-                    .toList()
-                    .toString()
-                    .toLowerCase();
-            boolean matchedChinese = StringUtils.hasText(likelyChineseName) && joined.contains(likelyChineseName.toLowerCase());
-            boolean matchedScientific = StringUtils.hasText(likelyScientificName) && joined.contains(likelyScientificName.toLowerCase());
-            if (!matchedChinese && !matchedScientific && confidence < 0.82d) {
-                warnings.add("识别候选与知识库证据匹配较弱，建议人工复核");
-            }
-        }
-        return warnings;
-    }
-
-    private String text(JsonNode node, String field) {
-        JsonNode fieldNode = node.path(field);
-        return fieldNode.isMissingNode() || fieldNode.isNull() ? "" : fieldNode.asText("").trim();
-    }
-
-    private String ragContext(String query) {
-        if (!StringUtils.hasText(query)) {
-            return "无";
-        }
-        List<RagSearchHit> hits = ragKnowledgeService.retrieveForScenario(RagKnowledgeService.SCENARIO_SPECIES_PROFILE, query, 4);
-        if (hits.isEmpty()) {
-            return "无";
-        }
-        return hits.stream()
-                .map(hit -> hit.title() + "：" + firstNonBlank(hit.summary(), hit.content()))
-                .toList()
-                .toString();
-    }
-
-    private double number(JsonNode node, String field) {
-        JsonNode fieldNode = node.path(field);
-        return fieldNode.isNumber() ? fieldNode.asDouble() : 0.0d;
-    }
-
-    private List<String> stringList(JsonNode node) {
+    private List<String> stringList(Object value) {
         List<String> values = new ArrayList<>();
-        if (!node.isArray()) {
-            return values;
-        }
-        for (JsonNode item : node) {
-            String value = item.asText("").trim();
-            if (StringUtils.hasText(value)) {
-                values.add(value);
+        for (Object item : objectItems(value)) {
+            String text = item == null ? "" : String.valueOf(item).trim();
+            if (StringUtils.hasText(text)) {
+                values.add(text);
             }
         }
         return values;
@@ -469,5 +558,17 @@ public class SpeciesAiService {
 
     private String escapeJson(String value) {
         return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private Map<String, Object> mapOf(Object... pairs) {
+        Map<String, Object> values = new LinkedHashMap<>();
+        for (int index = 0; index + 1 < pairs.length; index += 2) {
+            Object key = pairs[index];
+            Object value = pairs[index + 1];
+            if (key != null && value != null) {
+                values.put(String.valueOf(key), value);
+            }
+        }
+        return values;
     }
 }

@@ -73,6 +73,12 @@
             <p>{{ detail.summary }}</p>
           </div>
 
+          <AgentTracePanel
+            v-if="detail.agentRun"
+            :run="detail.agentRun"
+            :title="`报告生成轨迹 #${detail.agentRunId || '-'}`"
+          />
+
           <div class="report-sections">
             <article>
               <h4>重点发现</h4>
@@ -119,6 +125,7 @@ import {
   fetchAiReports,
   generateAiReport,
 } from '@/api/aiReports'
+import AgentTracePanel from '@/components/AgentTracePanel.vue'
 import { triggerBlobDownload } from '@/utils/download'
 import type { AiReportDetailView, AiReportView } from '@/types/gsmv'
 
@@ -254,6 +261,10 @@ onMounted(() => {
 .report-sections {
   display: grid;
   gap: 14px;
+  margin-top: 18px;
+}
+
+.ai-report-detail :deep(.agent-trace) {
   margin-top: 18px;
 }
 

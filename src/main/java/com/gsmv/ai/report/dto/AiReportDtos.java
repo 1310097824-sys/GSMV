@@ -1,5 +1,6 @@
 package com.gsmv.ai.report.dto;
 
+import com.gsmv.ai.agent.dto.AgentDtos;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import java.time.LocalDateTime;
@@ -40,7 +41,28 @@ public final class AiReportDtos {
             List<String> evidence,
             Long createdBy,
             String creatorName,
-            LocalDateTime createdAt
+            LocalDateTime createdAt,
+            Long agentRunId,
+            AgentDtos.AgentRunView agentRun,
+            List<AgentDtos.AgentStepView> agentSteps,
+            String verificationStatus,
+            Double confidence
     ) {
+        public AiReportDetailView(
+                Long id,
+                String reportType,
+                int days,
+                String title,
+                String summary,
+                List<String> highlights,
+                List<String> risks,
+                List<String> recommendations,
+                List<String> evidence,
+                Long createdBy,
+                String creatorName,
+                LocalDateTime createdAt
+        ) {
+            this(id, reportType, days, title, summary, highlights, risks, recommendations, evidence, createdBy, creatorName, createdAt, null, null, List.of(), null, null);
+        }
     }
 }

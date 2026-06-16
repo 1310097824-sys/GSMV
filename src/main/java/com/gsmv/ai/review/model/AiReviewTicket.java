@@ -24,6 +24,7 @@ public class AiReviewTicket {
     private String initialRecognitionJson;
     private String ragEvidenceJson;
     private String reviewEvidenceJson;
+    private Long agentRunId;
     private String submitNote;
     private Long finalSpeciesId;
     private String finalChineseName;
@@ -71,6 +72,8 @@ public class AiReviewTicket {
     public void setRagEvidenceJson(String ragEvidenceJson) { this.ragEvidenceJson = ragEvidenceJson; }
     public String getReviewEvidenceJson() { return reviewEvidenceJson; }
     public void setReviewEvidenceJson(String reviewEvidenceJson) { this.reviewEvidenceJson = reviewEvidenceJson; }
+    public Long getAgentRunId() { return agentRunId; }
+    public void setAgentRunId(Long agentRunId) { this.agentRunId = agentRunId; }
     public String getSubmitNote() { return submitNote; }
     public void setSubmitNote(String submitNote) { this.submitNote = submitNote; }
     public Long getFinalSpeciesId() { return finalSpeciesId; }

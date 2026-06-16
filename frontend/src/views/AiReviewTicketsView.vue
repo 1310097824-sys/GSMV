@@ -132,6 +132,12 @@
             <el-descriptions-item label="完成时间">{{ detail.reviewedAt || '-' }}</el-descriptions-item>
           </el-descriptions>
 
+          <AgentTracePanel
+            v-if="detail.agentRun"
+            :run="detail.agentRun"
+            :title="`识图复核轨迹 #${detail.agentRunId || '-'}`"
+          />
+
           <div v-if="detail.submitNote" class="review-detail__section">
             <h3>提交备注</h3>
             <p>{{ detail.submitNote }}</p>
@@ -284,6 +290,7 @@ import {
   startAiReviewTicket,
 } from '@/api/aiReview'
 import { fetchSpecies } from '@/api/species'
+import AgentTracePanel from '@/components/AgentTracePanel.vue'
 import { useAuthStore } from '@/stores/auth'
 import { listenDataChanged, notifyDataChanged } from '@/utils/dataSync'
 import type { AiReviewTicketDetailView, AiReviewTicketView, SpeciesView } from '@/types/gsmv'

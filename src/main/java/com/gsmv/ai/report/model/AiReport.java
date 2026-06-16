@@ -13,6 +13,7 @@ public class AiReport {
     private String risksJson;
     private String recommendationsJson;
     private String evidenceJson;
+    private Long agentRunId;
     private Long createdBy;
     private String creatorName;
     private LocalDateTime createdAt;
@@ -35,6 +36,8 @@ public class AiReport {
     public void setRecommendationsJson(String recommendationsJson) { this.recommendationsJson = recommendationsJson; }
     public String getEvidenceJson() { return evidenceJson; }
     public void setEvidenceJson(String evidenceJson) { this.evidenceJson = evidenceJson; }
+    public Long getAgentRunId() { return agentRunId; }
+    public void setAgentRunId(Long agentRunId) { this.agentRunId = agentRunId; }
     public Long getCreatedBy() { return createdBy; }
     public void setCreatedBy(Long createdBy) { this.createdBy = createdBy; }
     public String getCreatorName() { return creatorName; }

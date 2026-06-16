@@ -39,6 +39,13 @@ gsmv:
     low-confidence-threshold: 0.68
     assistant-observation-limit: 60
     assistant-species-limit: 20
+    agent:
+      knowledge-governance:
+        enabled: true
+        cron: "0 30 2 * * *"
+        zone: Asia/Shanghai
+        scan-limit: 200
+        max-issue-documents: 20
     embedding:
       provider: ${AI_EMBEDDING_PROVIDER:ollama}
     bailian:
